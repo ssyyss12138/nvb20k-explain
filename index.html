@@ -24,17 +24,15 @@
 <section class="hero">
   <div class="wrap">
     <span class="kicker">四档同架构 · k=16 序列压缩 · 三张查表</span>
-    <h1 class="title">从 Transformer <em>骨架</em>，到三张<em>查表</em></h1>
+    <h1 class="title">nvb20k：<em>骨架</em>、压缩和<em>三张表</em></h1>
     <p class="lede">
-      这个页面只讲五件事：<b>模型架构</b>、<b>Token 压缩技术</b>、<b>VE 表</b>、<b>NVE 表</b>、<b>hint 表</b>。
-      每一块都包含：它是什么、用在模型的哪个位置、表长什么样、怎么查、一个可以用手算核对的例子、怎么训练更新、最终怎么参与计算。
+      页面分五块：<b>模型架构</b>、<b>Token 压缩</b>、<b>VE 表</b>、<b>NVE 表</b>、<b>hint 表</b>。
+      每块都讲清楚：表长什么样、怎么查、用在哪、怎么训练。
     </p>
     <div class="chips">
-      <span class="chip">四档：640/768/1024/1152</span>
+      <span class="chip">四档：640–1152</span>
       <span class="chip">压缩 <b>k=16</b></span>
-      <span class="chip">VE <b>9~20 张</b></span>
-      <span class="chip">NVE <b>8,388,608 行</b></span>
-      <span class="chip">hint <b>6 阶 · ≈112 GB</b></span>
+      <span class="chip">三张表：VE / NVE / hint</span>
     </div>
   </div>
 </section>
@@ -43,31 +41,30 @@
   <div class="wrap">
     <div class="sec-head"><span class="sec-num">01</span><h2>模型架构</h2></div>
     <p class="sec-sub">
-      骨架是 <b>Qwen3 式 decoder-only Transformer</b>：pre-norm + RMSNorm + QK-Norm + RoPE + 因果自注意力 + ReLU² MLP。
-      四档同架构，只变宽/深/头数（head_dim 恒为 128）。这一节先不看压缩和表，只看骨架本身。
+      骨架就是 Qwen3 那套 decoder-only Transformer。四档只改宽度、深度和头数，head_dim 都是 128。
     </p>
 
     <div class="grid g4">
       <div class="card">
         <span class="flag attn">骨架</span>
         <h3>四档同一套结构</h3>
-        <p>hidden <b data-tier="h">1152</b>、层数 <b data-tier="L">39</b>、头数 <b data-tier="heads">9 × 128</b>、MLP <b data-tier="inter">3072</b>。四档只做尺寸缩放。</p>
+        <p>hidden <b data-tier="h">1152</b>，层数 <b data-tier="L">39</b>，头数 <b data-tier="heads">9 × 128</b>，MLP 中间维 <b data-tier="inter">3072</b>。四档共用这一套结构。</p>
         <div class="kv"><div class="row"><span>当前档位</span><span><b data-tier="id">1e19</b></span></div></div>
       </div>
       <div class="card">
         <span class="flag mlp">MLP</span>
         <h3>两矩阵 ReLU²</h3>
-        <p><code>W_d · ReLU²(W_u · x)</code>，中间维 ≈ 2.7h。比三矩阵 SwiGLU 少一个矩阵，MLP 参数与 FLOPs 约为 2/3。</p>
+        <p>MLP 用 <code>W_d · ReLU²(W_u · x)</code>，中间维约 2.7h。比 SwiGLU 少一个矩阵，参数和 FLOPs 约为 2/3。</p>
       </div>
       <div class="card">
         <span class="flag attn">注意力</span>
         <h3>MHA + QK-Norm + 输出门</h3>
-        <p>KV 头数 = 头数（MHA，不是 GQA）；q/k 每头做 128 维 RMSNorm；输出乘 <code>2σ(W_g x)</code> 的门（按头，零初始化 → 初始 1）。</p>
+        <p>KV 头数等于头数，是普通 MHA。q/k 每头做 128 维 RMSNorm；输出再乘 <code>2σ(W_g x)</code> 的门，按头一个，初始为 1。</p>
       </div>
       <div class="card">
         <span class="flag">初始化</span>
         <h3>残差输出零初始化</h3>
-        <p>O 投影、MLP down 投影零初始化 → 每个 block 初始是恒等映射；无 bias、无 dropout。</p>
+        <p>O 投影和 MLP down 投影零初始化，每个 block 一开始是恒等映射。没有 bias，也没有 dropout。</p>
       </div>
     </div>
 
@@ -79,7 +76,7 @@
         <button data-set-tier="3e18">3e18</button>
         <button data-set-tier="1e19" class="on">1e19</button>
       </div>
-      <span class="tierhint">切换档位，图里的 h / 层数 / 头数 / VE 张数会同步变化</span>
+      <span class="tierhint">切换档位，图里的 h、层数、头数和 VE 张数会跟着变</span>
     </div>
 
     <div class="diagram-shell">
@@ -401,7 +398,7 @@
         </tbody>
       </table>
     </div>
-    <p class="small" style="margin-top:8px">N = N_a 是非词表激活参数（嵌入表、输出层、VE/NVE 表不计）；FLOPs/token 按训练序列长度、全词表输出层计算。</p>
+    <p class="small" style="margin-top:8px">N = N_a 不含词表参数（输入嵌入、输出层、VE/NVE 表）；FLOPs/token 按训练序列长度和全词表输出层计算。</p>
   </div>
 </section>
 
@@ -409,39 +406,23 @@
   <div class="wrap">
     <div class="sec-head"><span class="sec-num">02</span><h2>Token 压缩技术：16 个 token → 1 个位置</h2></div>
     <p class="sec-sub">
-      压缩只发生在层栈的中段：前 20% 层逐 token 算，中间约 60% 层在“16 个 token 合成 1 个位置”的短序列上算，后 20% 层再回到逐 token。
-      它是一次<b>序列长度上的下采样（3072 → 192）</b>，不是特征维降维（h 不变）。
+      压缩只发生在中间约 60% 的层：前后 20% 还是逐 token，中间把 16 个连续 token 合成 1 个位置，序列从 3072 缩到 192。只降序列长度，h 不变。
     </p>
-
-    <div class="grid g3">
-      <div class="card">
-        <h3>为什么压</h3>
-        <p>注意力核心开销 ∝ 序列长度的平方。中段把长度 ÷16：线性层计算 ÷16，注意力核心 ÷256；同样的参数与算力可以多看几倍 token。</p>
-      </div>
-      <div class="card">
-        <h3>压完是什么</h3>
-        <p>得到 192 个“摘要位置”，每个位置包含原序列连续 16 个 token 的信息；中段在这些位置上做全局注意力。</p>
-      </div>
-      <div class="card">
-        <h3>代价</h3>
-        <p>一个位置代表 16 个 token，是有损压缩。靠前后的全长层、展开的内容门控、以及压缩前的残差来补细节。</p>
-      </div>
-    </div>
 
     <h3 style="margin:34px 0 6px;font-size:19px">① 怎么压：拼接 + 线性投影</h3>
     <div class="twocol">
       <div>
-        <p>在第 s 层（前段最后一层）之后，先保存一份全长残差 <code>a = x</code>（<code>[B, 3072, h]</code>），然后：</p>
+        <p>在第 s 层（前段最后一层）之后，先留一份全长残差 <code>a = x</code>（<code>[B, 3072, h]</code>），然后：</p>
         <div class="fbox">x_pad = 序列前面补 15 个零向量        # [B, 3072+15, h]
 每 16 个连续向量拼接成一个 16h 向量      # [B, 192, 16h]
 z = W_down · concat                     # [B, 192, h]
 
 W_down : [h, 16h]（无 bias 的线性层）
 1e19：h = 1152，16h = 18432</div>
-        <p>所以压缩后的第 j 个位置，正好包含原序列 <b>token 16j−15 … 16j</b> 这 16 个 token 的隐状态。第 0 块前面是补的零。窗口互不重叠、严格因果。</p>
+        <p>第 j 个位置装的是原序列 <b>token 16j−15 … 16j</b>。第 0 块左边补 15 个零。窗口不重叠，也不看未来。</p>
       </div>
       <div class="card" style="margin:0">
-        <h3 style="font-size:15px">一个具体数字（1e19）</h3>
+        <h3 style="font-size:15px">1e19 的数字</h3>
         <div class="kv">
           <div class="row"><span>原序列</span><span>3072</span></div>
           <div class="row"><span>压缩后</span><span>192</span></div>
@@ -449,24 +430,24 @@ W_down : [h, 16h]（无 bias 的线性层）
           <div class="row"><span>W_down</span><span>18432 → 1152</span></div>
           <div class="row"><span>窗口 j</span><span>token 16j−15 … 16j</span></div>
         </div>
-        <p class="small" style="margin-top:10px">训练/评测序列长度都是 16 的整数倍；不是整数倍时末尾补零，只影响最后一个位置。</p>
+        <p class="small" style="margin-top:10px">序列长度都是 16 的整数倍；不是的话末尾补零，只影响最后一个位置。</p>
       </div>
     </div>
 
     <h3 style="margin:34px 0 6px;font-size:19px">② 压缩后“位置”怎么定：不是新 token id，是块号 j</h3>
     <div class="card">
-      <p><b>token id 不变。</b>token id 由分词器决定（BPE 词表 49152），压缩不会重新编号，也不会生成新的 token id；被压缩的是<b>隐状态序列</b>。</p>
-      <p style="margin-top:8px">压缩后得到 192 个位置，位置编号是 <b>j = 0 … 191</b>（块号）。每个位置 j 对应原序列的 16 个 token，但它在中段里只占 1 个位置：</p>
+      <p><b>token id 不变。</b>分词器给的是什么就是什么，压缩不会重新编号。<b>压缩的是隐状态序列</b>，不是 token id。</p>
+      <p style="margin-top:8px">压缩后是 192 个位置，编号 <b>j = 0 … 191</b>（块号）。每个位置 j 对应原序列 16 个 token，中段里只占 1 个位置：</p>
       <div class="fbox">中段 RoPE 位置 = 块号 j（0 … 191）
 中段因果 mask  = 192 × 192 的因果矩阵
 中段 attention 的“序列长度” = 192</div>
-      <p style="margin-top:8px">所以压缩改变的只是“序列有多长、每个位置代表多少 token”，没有改变 token 本身的 id。</p>
+      <p style="margin-top:8px">中段 RoPE 用块号 j，因果 mask 是 192×192，attention 的长度也是 192。</p>
     </div>
 
     <h3 style="margin:34px 0 6px;font-size:19px">③ 怎么恢复：上投影 + 按块切片 + 内容门控 + 残差</h3>
     <div class="twocol">
       <div>
-        <p>中段算完后，把 192 个位置展开回 3072 个 token：</p>
+        <p>中段算完，用 W_up 展开回 3072 个 token：</p>
         <div class="fbox">u = W_up · z                        # [B, 192, 16h]
 reshape 成 [B, 192, 16, h]
 
@@ -475,16 +456,16 @@ u_t = u[⌊t/16⌋, t mod 16]
 
 g_t = 2σ( W_out·W_in·RMSNorm(a_t) + β_{t mod 16} )   # 秩 64
 x_t = a_t + g_t ⊙ u_t               # 加回压缩前残差</div>
-        <p>关键点：<b>展开不是简单复制</b>。块内 16 个 token 共享同一个摘要，但每个 token 用自己的门 <code>g_t</code> 决定读回多少；再与压缩前的残差 <code>a_t</code> 相加，所以中段只是“残差流里的一个低分辨率处理块”。</p>
+        <p>展开不是复制。块里 16 个 token 共享同一份摘要，但每个 token 用自己的门 <code>g_t</code> 决定读回多少，再加压缩前的残差 <code>a_t</code>。</p>
       </div>
       <div class="card" style="margin:0">
         <h3 style="font-size:15px">为什么能恢复出细节</h3>
         <ul style="margin:6px 0 0;padding-left:20px;color:var(--muted);font-size:14px">
-          <li>压缩前的全长残差 <code>a_t</code> 一直在，每个 token 的原始信息不会丢；</li>
-          <li>内容门 <code>g_t</code> 由当前 token 自己的全长隐状态算出，逐 token 决定读多少摘要；</li>
-          <li>后段 20% 的层回到全分辨率，继续做逐 token 的注意力与 MLP。</li>
+          <li>压缩前的残差 <code>a_t</code> 一直留着，原始信息没丢；</li>
+          <li>门 <code>g_t</code> 由当前 token 自己算，读多少摘要逐 token 决定；</li>
+          <li>后段 20% 的层回到全分辨率，继续逐 token 算。</li>
         </ul>
-        <p class="small" style="margin-top:10px">这就是“U-Net / Hourglass”式的结构：下采样 → 低分辨率处理 → 上采样 → 跳连（残差）。</p>
+        <p class="small" style="margin-top:10px">整体就是“下采样 → 低分辨率处理 → 上采样 + 跳连”。</p>
       </div>
     </div>
 
@@ -636,10 +617,6 @@ x_t = a_t + g_t ⊙ u_t               # 加回压缩前残差</div>
 <text x="30" y="788" class="ts">注意窗口终点 16j 与展开起点 16j 是同一个 token：摘要恰好止于该块第一个输出 token 自己。</text>
 </svg>
     </div>
-    <div class="note warn">
-      因果性：块 j 的摘要只包含 token ≤ 16j，而它展开服务的 token 是 16j … 16j+15——每个 token 读到的信息都不含未来。
-      注意窗口终点 16j 与展开起点 16j 是同一个 token：摘要恰好止于该块第一个输出 token 自己。
-    </div>
   </div>
 </section>
 
@@ -647,18 +624,17 @@ x_t = a_t + g_t ⊙ u_t               # 加回压缩前残差</div>
   <div class="wrap">
     <div class="sec-head"><span class="sec-num">03</span><h2>VE 表：按当前 token 查表，加进注意力 V</h2></div>
     <p class="sec-sub">
-      VE = <b>Value Embeddings</b>。一句话：给每个 token 的 Value 加一条“我是谁”的可学习旁路。
-      它不改 q/k、不改注意力分数，只改被注意力聚合的 <b>v</b>；查表没有矩阵乘，是“免费容量”。
+      VE（Value Embeddings）给每个 token 的 Value 加一条可学习旁路。q/k 和注意力分数都不动，只改被聚合的 <b>v</b>；查表没有矩阵乘。
     </p>
 
     <div class="twocol">
       <div class="card" style="margin:0">
         <h3>干什么用</h3>
-        <p>注意力的输出是 <code>Σ softmax(q·k)·v</code>，<b>v 才是真正被加权求和的内容</b>。标准 Transformer 的 v 完全来自 <code>W_v·h</code>；VE 额外查出一段向量加进 v。</p>
-        <p>直觉：哪怕注意力权重很分散，每个 token 的 value 里也始终带着自己的身份/类型信息，模型不用全靠 <code>W_v</code> 去记。</p>
+        <p>注意力的输出是 <code>Σ softmax(q·k)·v</code>，<b>v 才是被加权的内容</b>。标准 Transformer 的 v 全来自 <code>W_v·h</code>；VE 额外查一段向量加进 v。</p>
+        <p>注意力权重再散，每个 token 的 value 里也始终带着自己的身份信息。</p>
         <h3 style="margin-top:14px">用在哪</h3>
-        <p>每一层注意力内部：<b>V 的线性投影之后、分头与因果注意力之前</b>。中段缩短时只在块尾 token 处查（每 16 个 token 一次）。</p>
-        <div class="note ok" style="margin-bottom:0">和输入嵌入 E 的区别：E 只出现在输入残差流（x⁰）；每一层的 V 是“当前隐状态 × W_v”重新算出来的；VE 是另外查表加到 V 上——三者不是同一个东西。</div>
+        <p>每层 V 投影之后、分头和因果注意力之前。中段只在块尾 token 查（每 16 个一次）。</p>
+        <div class="note ok" style="margin-bottom:0">和输入嵌入 E 的区别：E 只在输入残差流；每层 V 由 W_v 重新算；VE 是另查表加到 V 上。</div>
       </div>
 
       <div class="schematic">
@@ -684,7 +660,7 @@ x_t = a_t + g_t ⊙ u_t               # 加回压缩前残差</div>
     <h3 style="margin:34px 0 6px;font-size:19px">① 表结构：每个“层对”一张表</h3>
     <div class="tdraw">
       <h4>VE 表长什么样</h4>
-      <p class="tsmall">每张表 <b>49152 行 × kv 列</b>；行号就是 token id。G 张表按“层对”绑定。</p>
+      <p class="tsmall">每张表 <b>49152 行 × kv 列</b>，行号就是 token id。G 张表按层对绑定。</p>
       <div class="vewrap">
         <div>
           <div class="tsmall">表的数量（按层对）</div>
@@ -724,7 +700,7 @@ kv = KV 头数 × head_dim = 头数 × 128 = h
 首尾对称：第 i 层与第 L−1−i 层共用一张
 3e17：18 层 → 9 张： (0,17),(1,16)…(8,9)
 1e19：39 层 → 20 张： (0,38)…(18,20)，第 19 层单独</div>
-        <p>为什么首尾共用：参数省一半，而前后层学到的“token 身份”信息可以互补；中间层与前后段等宽时也复用同一张表。</p>
+        <p>首尾共用省一半参数，前后层学到的 token 信息也能互补。</p>
       </div>
       <div class="tbl-wrap">
         <table class="tbl">
@@ -741,7 +717,7 @@ kv = KV 头数 × head_dim = 头数 × 128 = h
 
     <h3 style="margin:34px 0 6px;font-size:19px">② 怎么查：行号就是 token id</h3>
     <div class="card">
-      <p>普通的嵌入查表，<b>不是哈希</b>：</p>
+      <p>普通嵌入查表，不是哈希。</p>
       <div class="fbox">给定位置 t 的 token id x_t，以及它所在的层 i：
   1. 找到层 i 绑定的表 g
   2. 取表 g 的第 x_t 行
@@ -749,7 +725,7 @@ kv = KV 头数 × head_dim = 头数 × 128 = h
 
 前后全分辨率层：每个 token 都查
 中段缩短层：只在块尾 token（第 16j 个）查一次，整块共用</div>
-      <p>查出来的向量是 <b>kv 维</b>（3e17 是 640，1e19 是 1152）；若要做逐 KV 头门控，就 reshape 成 <code>[KV 头数, 128]</code>。没有哈希、没有碰撞、没有指纹校验。</p>
+      <p>查出来是 kv 维（3e17 是 640，1e19 是 1152）；要逐 KV 头门控就 reshape 成 <code>[KV 头数, 128]</code>。没有哈希、碰撞和指纹。</p>
     </div>
 
     <h3 style="margin:34px 0 6px;font-size:19px">③ 一个具体例子</h3>
@@ -760,22 +736,22 @@ kv = KV 头数 × head_dim = 头数 × 128 = h
 → reshape 成 5 个 KV 头 × 128
 → 每头乘门控 g（初始 1）
 → 按 λ₁ 加进该 token 的 v</div>
-      <p>如果这个 token 同时被 VE 和 NVE 命中，v 里会同时加上两路查表向量（分别用 λ₁、λ₂/λ₃ 加权）。</p>
+      <p>如果这个 token 同时被 VE 和 NVE 命中，v 里会加两路向量，分别用 λ₁、λ₂/λ₃ 加权。</p>
     </div>
 
     <h3 style="margin:34px 0 6px;font-size:19px">④ 怎么训练更新</h3>
     <div class="grid g2">
       <div class="card">
         <h3>初始化</h3>
-        <p>表：<code>N(0, 0.02)</code> 随机初始化，和输入嵌入一样；λ：0.5；门控：零初始化（初始 g = 1）。</p>
+        <p>表：<code>N(0, 0.02)</code> 随机初始化，和输入嵌入一样；λ 初值 0.5；门控零初始化（初始 g = 1）。</p>
         <h3 style="margin-top:12px">反向传播</h3>
-        <p>梯度从注意力输出 → v → 反传到被查到的那些行；<b>本 batch 没出现过的 token 行不更新</b>（稀疏行更新）。因为首尾层共用表，两层的梯度会累加到同一批行。</p>
+        <p>梯度从注意力输出回到 v，再回到被查到的行。<b>本 batch 没出现的行不更新</b>。首尾层共用表，梯度会累加到同一批行。</p>
       </div>
       <div class="card">
         <h3>优化器</h3>
-        <p>所有嵌入表（输入嵌入、VE、NVE、提示类别嵌入）归入<b>嵌入参数组</b>：AdamW + 单独学习率、无权重衰减；λ 和门控也一起训练。</p>
+        <p>所有嵌入表（输入嵌入、VE、NVE、提示类别）都进<b>嵌入参数组</b>：AdamW + 单独学习率、无权重衰减。λ 和门控一起训练。</p>
         <h3 style="margin-top:12px">参数口径</h3>
-        <p>VE 表不计入 N / N_a，也不产生矩阵乘 FLOPs；但它是真实显存，查表的访存时间会计入 EvalTime。</p>
+        <p>VE 表不计入 N / N_a，也不产生矩阵乘 FLOPs；但占显存，查表时间算进 EvalTime。</p>
       </div>
     </div>
 
@@ -786,7 +762,7 @@ g = 2σ(W·h[:12])     # 每个 KV 头、每种来源一个门；初始 g = 1
 λ 每层 4 个可学习标量，初值 0.5
 
 混合后 reshape 成 [B, 头数, L, 128] → 因果注意力</div>
-    <div class="note warn" style="margin-bottom:0">VE 只负责“当前 token 身份”；局部上下文由下一节的 NVE 负责。两者是两份独立查询，分别用 λ₁ 与 λ₂/λ₃ 加权，不是拼在一起再算。</div>
+    <div class="note warn" style="margin-bottom:0">VE 负责当前 token 的身份，局部上下文交给下一节的 NVE。两路独立查表，不是拼在一起再算。</div>
   </div>
 </section>
 
@@ -794,8 +770,7 @@ g = 2σ(W·h[:12])     # 每个 KV 头、每种来源一个门；初始 g = 1
   <div class="wrap">
     <div class="sec-head"><span class="sec-num">04</span><h2>NVE 表：按 2-gram / 3-gram 哈希查表，加进 V</h2></div>
     <p class="sec-sub">
-      NVE = <b>N-gram Value Embeddings</b>。VE 只看当前 token；NVE 看“当前 token + 前 1/2 个 token”，把<b>局部上下文</b>也塞进 Value。
-      它是一张可训练的哈希表：同一个后缀 n-gram 永远映射到同一个桶，查出一段向量；冲突靠 4 组独立哈希分摊。
+      NVE（N-gram Value Embeddings）看最近 2 个或 3 个 token，把局部上下文也放进 Value。可训练哈希表：同一个后缀永远落同一个桶，冲突用 4 组独立哈希摊开。
     </p>
 
     <div class="schematic">
@@ -869,7 +844,7 @@ g = 2σ(W·h[:12])     # 每个 KV 头、每种来源一个门；初始 g = 1
           <div class="row"><span>总参数</span><span>1.34 B（3e17）~ 2.42 B（1e19）</span></div>
           <div class="row"><span>BF16 大小</span><span>约 2.5 ~ 4.5 GiB</span></div>
         </div>
-        <p class="small" style="margin-top:10px">四档行数完全一样，只是行宽随 h 变。2-gram、3-gram 各占一半。</p>
+        <p class="small" style="margin-top:10px">四档行数一样，只是行宽随 h 变；2-gram 和 3-gram 各占一半。</p>
       </div>
     </div>
 
@@ -893,7 +868,7 @@ k3 = k2 ⊕ (k2>>29)       = 1,833,742,762,213,342
 
 桶号 = k3 mod 2²⁰        = 229,342
 行号 = 0 × 1,048,576 + 229,342 = 229,342</div>
-        <p class="small">“混合”两步（右移 + 异或 + 乘法）是为了把高位折进低位，避免只看低 20 位时容易撞桶。</p>
+        <p class="small">混合两步（右移、异或、乘法）是把高位折进低位；不混合的话只看低 20 位，很容易撞桶。</p>
       </div>
       <div class="tbl-wrap">
         <table class="tbl">
@@ -938,11 +913,11 @@ key = 2·m0 ⊕ 30·m1 ⊕ 100·m2 = 181,534,929,160
     <div class="grid g2">
       <div class="card">
         <h3>初始化与反向</h3>
-        <p><code>N(0, 0.02)</code> 随机初始化；梯度只回传到本 batch 命中的那些行（未命中行不变）。全模型所有 VE 层共用这一套表，梯度从各层累加到相同行上。</p>
+        <p><code>N(0, 0.02)</code> 随机初始化。梯度只回传到本 batch 命中的行，没命中的不变。所有 VE 层共用一套表，梯度从各层累加到相同行。</p>
       </div>
       <div class="card">
         <h3>优化器与口径</h3>
-        <p>归入嵌入参数组（AdamW + 单独学习率、无权重衰减）；可以给 NVE 单独学习率，但这次没启用。表不计 N / N_a、不计 FLOPs，但占显存、查表时间计入 EvalTime。</p>
+        <p>归入嵌入参数组（AdamW + 单独学习率、无权重衰减）。NVE 可以单独设学习率，这次没开。表不计 N / N_a、不计 FLOPs，但占显存、查表时间算进 EvalTime。</p>
       </div>
     </div>
 
@@ -953,18 +928,16 @@ key = 2·m0 ⊕ 30·m1 ⊕ 100·m2 = 181,534,929,160
 
 g = 2σ(W·h[:12])，每个 KV 头、每种来源一个门；初始 g = 1</div>
     <div class="note warn" style="margin-bottom:0">
-      <b>撞桶：</b>不同的 n-gram 完全可能落到同一行（哈希没有指纹校验）。它们会读到同一段向量，训练时梯度也相加。
-      4 组独立哈希的作用是把一次碰撞的影响限制在 kv/4 个通道上，而不是整段 kv；4 组同时撞的概率更低。
+      <b>撞桶：</b>不同 n-gram 可能落到同一行（哈希没有指纹校验），读到同一段向量，梯度也叠加。4 组独立哈希把一次碰撞限制在 kv/4 个通道，4 组同时撞的概率更低。
     </div>
   </div>
 </section>
 
 <section class="section" id="hint">
   <div class="wrap">
-    <div class="sec-head"><span class="sec-num">05</span><h2>hint 表：只读的 n-gram 统计，用来给输入 / 输出 / logit 加提示</h2></div>
+    <div class="sec-head"><span class="sec-num">05</span><h2>hint 表：只读统计，给输入、输出和 logit 加提示</h2></div>
     <p class="sec-sub">
-      hint 表是这个项目里最特殊的表：它<b>不是可训练参数</b>，而是官方训练语料的统计结果——记录“某个 n-gram 后面最常出现什么 token、出现多少次、有多纯”。
-      模型不训练它，但<b>训练和推理都会查它</b>；它自己不更新，却会影响其他所有参数怎么更新。
+      hint 表不是训练参数，是训练语料里 n-gram 后继的统计：每个 n-gram 后面最常接什么 token、出现多少次、有多纯。模型不更新它，但训练和推理都会查。
     </p>
 
     <div class="twocol">
@@ -1014,7 +987,7 @@ g = 2σ(W·h[:12])，每个 KV 头、每种来源一个门；初始 g = 1</div>
         </tbody>
       </table>
     </div>
-    <p>为什么阶越高保留越少：高阶 n-gram 更稀疏、后继更集中（通常只有一个固定后继），多留只会塞噪声、浪费槽位。</p>
+    <p>阶越高保留越少：高阶 n-gram 更稀疏，后继通常就一个，多留只会塞噪声。</p>
 
     <h3 style="margin:34px 0 6px;font-size:19px">② 怎么查：哈希 + 指纹校验</h3>
     <div class="card">
@@ -1029,7 +1002,7 @@ fp   = (hash >> bits) & 0xFFFF      # 取高位作为 16 位指纹
 命中后得到：(后继 token, 类别)
 
 15 列分别查 → 最多 15 个 (token, 类别)；没有命中的列贡献 0</div>
-      <p>和 NVE 的区别：hint 表有 <b>16 位指纹校验</b>，能拒绝大部分哈希冲突；NVE 没有指纹，撞了就用同一行。hint 的阶到 20，NVE 只到 3。</p>
+      <p>和 NVE 的区别：hint 有 <b>16 位指纹校验</b>，能挡掉大部分哈希冲突；NVE 没有指纹，撞了就用同一行。hint 到 20 阶，NVE 只到 3。</p>
       <p class="small">类别 = 7 个次数桶 × 6 个纯度桶 = 42 类；同一列的不同 n-gram 共享这个类别的信任度。</p>
     </div>
 
@@ -1072,7 +1045,7 @@ fp   = (hash >> bits) & 0xFFFF      # 取高位作为 16 位指纹
         <span class="farrow">→</span>
         <div class="stepbox amber">否则<br><b>这一列贡献 0</b></div>
       </div>
-      <p class="small">说明：源码快照没有随附 112 GB 的表文件，所以这里只能算出“落在哪个槽、该比对哪个指纹”；该槽实际存的 token / 类别由语料统计决定。</p>
+      
     </div>
 
     <h3 style="margin:34px 0 6px;font-size:19px">③ 完整算例（续）：x_{t-2}=100, x_{t-1}=30, x_t=2（3 阶）</h3>
@@ -1119,11 +1092,11 @@ amount：该类别的“信任度缩放”（可学习，初始 0）
 
 s_in / s_out：两个可学习标量，初始 0
 score[cls]  ：每个类别一个可学习标量，初始 0</div>
-        <p>所以训练第 0 步，整个 hint 分支贡献恒为 0，模型等价于完全不用提示。</p>
+        <p>训练第 0 步时整个 hint 分支输出 0，模型等于不用提示。</p>
       </div>
     </div>
 
-    <h4 style="margin:26px 0 8px;font-size:16px;color:var(--ink)">三处注入的完整时间线</h4>
+    <h4 style="margin:26px 0 8px;font-size:16px;color:var(--ink)">前向里的三次使用</h4>
     <div class="fbox">input_ids [B, L]
    │
    ├─ 查表一次：15 列 → H、hint_scores
@@ -1143,7 +1116,7 @@ logits [B, L, 49152]
    ├─ logits[t, tok_c] += score[cls_c]   ← ③ logit 加分
    ▼
 softmax / 交叉熵</div>
-    <p>三处共用一次查表结果：H 复用两次，logit 用的是同一批候选 token。位置 t 的提示来自“以 x_t 结尾的 n-gram 后继”，所以三处都在为预测 t+1 服务。</p>
+    <p>三处共用一次查表结果：H 用两次，logit 用同一批候选。位置 t 的提示来自以 x_t 结尾的 n-gram，三处都在预测下一个 token。</p>
 
     <h4 style="margin:26px 0 8px;font-size:16px;color:var(--ink)">① 输入嵌入：h⁰ += s_in · H</h4>
     <div class="card">
@@ -1153,7 +1126,7 @@ softmax / 交叉熵</div>
 E[input_ids]   [B, L, h]
 H              [B, L, h]
 s_in           标量（hint_mix[0]，初始 0）</div>
-      <p><b>为什么加在这里：</b>提示从第 1 层就进入残差流，后面的注意力、MLP 都能间接使用；相当于提前告诉模型“这个词后面通常接什么”。</p>
+      <p><b>为什么加在这里：</b>提示从第 1 层就进残差流，后面的层都能用。</p>
       <p><b>形状（1e19）：</b><code>E[input_ids] [B,3072,1152]</code>、<code>H [B,3072,1152]</code>、<code>s_in</code> 标量。</p>
     </div>
 
@@ -1163,20 +1136,20 @@ s_in           标量（hint_mix[0]，初始 0）</div>
       <div class="fbox">h = RMSNorm(h_L)
 h = h + s_out · H
 logits = W_out · h          # 或先 head_proj 再 lm_head</div>
-      <p><b>注意：</b>这不是每层注意力的输出前。每层 V 里加的是 <b>VE / NVE</b>（逐层、逐 token）；hint 是<b>模型级</b>，只在入口和出口各加一次。中段缩短时也不会重新查 hint。</p>
-      <p><code>s_in</code> 和 <code>s_out</code> 是两个独立标量，模型可以学“入口少信一点、出口多信一点”，或反过来。</p>
+      <p><b>注意：</b>这不是每层注意力的输出前。每层 V 里加的是 VE / NVE；hint 是模型级，只在入口和出口各加一次。</p>
+      <p>s_in 和 s_out 分开学，入口和出口可以有不同的信任度。</p>
     </div>
 
     <h4 style="margin:26px 0 8px;font-size:16px;color:var(--ink)">③ logit 加分：logits[t, tok_c] += score[cls_c]</h4>
     <div class="card">
-      <p><b>加在哪：</b>输出层算出 logits 之后、softmax / 交叉熵之前。</p>
+      <p><b>加在哪：</b>输出层算完 logits、softmax 之前。</p>
       <div class="fbox">logits[t, tok_k] += score[cls_k]
 
 score[cls]：每个类别一个可学习标量（631 个），初始 0
 同一个 token 被多列命中 → 分数相加（scatter_add）
 没命中 → 加 0
 没有矩阵乘，只改候选 token 所在的列</div>
-      <p>和输出前注入的区别：输出前是 <b>h 维隐空间</b>的向量，经过 W_out 后影响<b>全部</b> logits；logit 加分是 <b>49152 维词表空间</b>里的标量，只改那 15 个候选列。</p>
+      <p>输出前注入是 h 维向量，经过 W_out 影响全部 logits；logit 加分是 49152 维空间里的标量，只改候选列。</p>
     </div>
 
     
