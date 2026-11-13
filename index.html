@@ -1,0 +1,1198 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>nvb20k 深度解剖 · 架构 / Token 压缩 / VE / NVE / hint</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="wrap">
+    <div class="brand"><span class="dot"></span>nvb20k 深度解剖 <small>/ SciComp26</small></div>
+    <nav class="nav">
+      <a href="#arch">模型架构</a>
+      <a href="#compress">Token 压缩</a>
+      <a href="#ve">VE 表</a>
+      <a href="#nve">NVE 表</a>
+      <a href="#hint">hint 表</a>
+    </nav>
+  </div>
+</header>
+
+<section class="hero">
+  <div class="wrap">
+    <span class="kicker">四档同架构 · k=16 序列压缩 · 三张查表</span>
+    <h1 class="title">从 Transformer <em>骨架</em>，到三张<em>查表</em></h1>
+    <p class="lede">
+      这个页面只讲五件事：<b>模型架构</b>、<b>Token 压缩技术</b>、<b>VE 表</b>、<b>NVE 表</b>、<b>hint 表</b>。
+      每一块都包含：它是什么、用在模型的哪个位置、表长什么样、怎么查、一个可以用手算核对的例子、怎么训练更新、最终怎么参与计算。
+    </p>
+    <div class="chips">
+      <span class="chip">四档：640/768/1024/1152</span>
+      <span class="chip">压缩 <b>k=16</b></span>
+      <span class="chip">VE <b>9~20 张</b></span>
+      <span class="chip">NVE <b>8,388,608 行</b></span>
+      <span class="chip">hint <b>6 阶 · ≈112 GB</b></span>
+    </div>
+    <div class="hero-actions">
+      <a class="btn primary" href="#arch">从模型架构开始 ↓</a>
+      <a class="btn ghost" href="#compress">直接看 Token 压缩</a>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="arch">
+  <div class="wrap">
+    <div class="sec-head"><span class="sec-num">01</span><h2>模型架构</h2></div>
+    <p class="sec-sub">
+      骨架是 <b>Qwen3 式 decoder-only Transformer</b>：pre-norm + RMSNorm + QK-Norm + RoPE + 因果自注意力 + ReLU² MLP。
+      四档同架构，只变宽/深/头数（head_dim 恒为 128）。这一节先不看压缩和表，只看骨架本身。
+    </p>
+
+    <div class="grid g4">
+      <div class="card">
+        <span class="flag attn">骨架</span>
+        <h3>四档同一套结构</h3>
+        <p>hidden <b data-tier="h">1152</b>、层数 <b data-tier="L">39</b>、头数 <b data-tier="heads">9 × 128</b>、MLP <b data-tier="inter">3072</b>。四档只做尺寸缩放。</p>
+        <div class="kv"><div class="row"><span>当前档位</span><span><b data-tier="id">1e19</b></span></div></div>
+      </div>
+      <div class="card">
+        <span class="flag mlp">MLP</span>
+        <h3>两矩阵 ReLU²</h3>
+        <p><code>W_d · ReLU²(W_u · x)</code>，中间维 ≈ 2.7h。比三矩阵 SwiGLU 少一个矩阵，MLP 参数与 FLOPs 约为 2/3。</p>
+      </div>
+      <div class="card">
+        <span class="flag attn">注意力</span>
+        <h3>MHA + QK-Norm + 输出门</h3>
+        <p>KV 头数 = 头数（MHA，不是 GQA）；q/k 每头做 128 维 RMSNorm；输出乘 <code>2σ(W_g x)</code> 的门（按头，零初始化 → 初始 1）。</p>
+      </div>
+      <div class="card">
+        <span class="flag">初始化</span>
+        <h3>残差输出零初始化</h3>
+        <p>O 投影、MLP down 投影零初始化 → 每个 block 初始是恒等映射；无 bias、无 dropout。</p>
+      </div>
+    </div>
+
+    <div class="tierbar" style="margin-top:22px">
+      <span class="label">档位：</span>
+      <div class="seg">
+        <button data-set-tier="3e17">3e17</button>
+        <button data-set-tier="1e18">1e18</button>
+        <button data-set-tier="3e18">3e18</button>
+        <button data-set-tier="1e19" class="on">1e19</button>
+      </div>
+      <span class="tierhint">切换档位，图里的 h / 层数 / 头数 / VE 张数会同步变化</span>
+    </div>
+
+    <div class="diagram-shell">
+<svg viewBox="0 0 1240 930" role="img" aria-label="nvb20k 架构总图">
+        <defs>
+          <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="rgba(150,175,255,.7)"></path>
+          </marker>
+          <marker id="arC" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="#3fe3ff"></path>
+          </marker>
+          <marker id="arP" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="#ff7ac6"></path>
+          </marker>
+          <marker id="arG" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="#4ce6a8"></path>
+          </marker>
+          <marker id="arV" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="#a98bff"></path>
+          </marker>
+        </defs>
+
+        <!-- 输入列 -->
+        <text x="30" y="82" class="ts">输入 · 分词</text>
+        <g class="node" data-node="input">
+          <rect class="box" x="30" y="94" width="200" height="54" rx="12" fill="rgba(63,227,255,.08)" stroke="rgba(63,227,255,.5)"></rect>
+          <text x="42" y="117" class="t">input_ids</text>
+          <text x="42" y="135" class="tm">[B, 3072] · vocab 49152</text>
+          <title>输入 token id（点开看分词与打包规则）</title>
+        </g>
+        <path class="edge" d="M130,148 L130,178" marker-end="url(#ar)"></path>
+
+        <g class="node" data-node="embed">
+          <rect class="box" x="30" y="180" width="200" height="60" rx="12" fill="rgba(63,227,255,.07)" stroke="rgba(63,227,255,.45)"></rect>
+          <text x="42" y="204" class="t">E[x] 词表嵌入</text>
+          <text x="42" y="222" class="tm">49152 × h · 查表</text>
+          <title>词表嵌入（同时被提示向量复用）</title>
+        </g>
+        <path class="edge" d="M130,240 L130,270" marker-end="url(#ar)"></path>
+
+        <g class="node" data-node="hint_in">
+          <rect class="box" x="30" y="272" width="200" height="76" rx="12" fill="rgba(255,122,198,.10)" stroke="rgba(255,122,198,.55)"></rect>
+          <text x="42" y="296" class="t">＋ 提示向量</text>
+          <text x="42" y="314" class="tm">15 列 · 输入强度 s_in=0</text>
+          <text x="42" y="332" class="ts">(1+trust)·E[tok] + feat</text>
+          <title>输入侧提示向量（点开看 15 列与类别）</title>
+        </g>
+        <path class="edge" d="M130,348 L130,382 L238,382" marker-end="url(#ar)"></path>
+
+        <!-- 层栈容器 -->
+        <rect x="240" y="188" width="560" height="600" rx="18" fill="rgba(63,227,255,.03)" stroke="rgba(63,227,255,.18)" stroke-dasharray="6 6"></rect>
+
+        <!-- 层栈 -->
+        <g class="node" data-node="layer_full">
+          <rect x="256" y="198" width="528" height="132" rx="14" fill="rgba(63,227,255,.06)" stroke="rgba(63,227,255,.35)"></rect>
+        </g>
+        <text x="272" y="220" class="t">前段 <tspan data-tier="front">8</tspan> 层 · 逐 token（L = 3072）</text>
+        <text x="272" y="238" class="ts">完整注意力 + MLP；V 混入 VE / NVE；输出门控按头</text>
+        <g class="node" data-node="layer_full">
+          <rect class="box" x="272" y="248" width="496" height="20" rx="7" fill="rgba(63,227,255,.14)" stroke="rgba(63,227,255,.4)"></rect>
+          <text x="284" y="262" class="ts">Layer 0 · RMSNorm → Attn → ＋ → RMSNorm → MLP → ＋</text>
+          <rect class="box" x="272" y="272" width="496" height="20" rx="7" fill="rgba(63,227,255,.14)" stroke="rgba(63,227,255,.4)"></rect>
+          <text x="284" y="286" class="ts">Layer 1 · …同构…</text>
+          <rect class="box" x="272" y="296" width="496" height="20" rx="7" fill="rgba(63,227,255,.14)" stroke="rgba(63,227,255,.4)"></rect>
+          <text x="284" y="310" class="ts">…</text>
+          <title>前段层（逐 token）</title>
+        </g>
+
+        <path class="edge" d="M520,330 L520,340" marker-end="url(#ar)"></path>
+        <g class="node" data-node="shorten">
+          <rect class="box" x="256" y="342" width="528" height="50" rx="12" fill="rgba(255,191,107,.10)" stroke="rgba(255,191,107,.55)"></rect>
+          <text x="272" y="364" class="t">↓ 压缩 ×16：3072 token → <tspan data-tiermid="midLen">192</tspan> 位置</text>
+          <text x="272" y="381" class="ts">压缩投影：concat(16h) → h（线性层）</text>
+          <title>压缩：16 个相邻 token 合成 1 个位置</title>
+        </g>
+
+        <path class="edge" d="M520,392 L520,404" marker-end="url(#ar)"></path>
+        <g class="node" data-node="middle">
+          <rect x="256" y="406" width="528" height="192" rx="14" fill="rgba(169,139,255,.07)" stroke="rgba(169,139,255,.4)"></rect>
+        </g>
+        <text x="272" y="428" class="t">中段 <tspan data-tier="mid">23</tspan> 层 · 缩短序列 L/16 = <tspan data-tiermid="midLen">192</tspan></text>
+        <text x="272" y="446" class="ts">在 192 个位置上做「全局注意力」，看到整条序列的压缩摘要；1/16 计算量</text>
+        <g class="node" data-node="middle">
+          <rect class="box" x="272" y="456" width="496" height="18" rx="6" fill="rgba(169,139,255,.16)" stroke="rgba(169,139,255,.45)"></rect>
+          <text x="284" y="469" class="ts">Layer <tspan data-tiermid="range">L8 … L30</tspan> · 注意力在压缩序列上（RoPE 用块号 j）</text>
+          <rect class="box" x="272" y="478" width="496" height="18" rx="6" fill="rgba(169,139,255,.16)" stroke="rgba(169,139,255,.45)"></rect>
+          <text x="284" y="491" class="ts">…每层同构：QK-Norm / RoPE / 逐通道输出门控 [h,h]</text>
+          <rect class="box" x="272" y="500" width="496" height="18" rx="6" fill="rgba(169,139,255,.16)" stroke="rgba(169,139,255,.45)"></rect>
+          <text x="284" y="513" class="ts">中段 VE / NVE 只查块尾位置（stride = 16）</text>
+          <rect class="box" x="272" y="522" width="496" height="18" rx="6" fill="rgba(169,139,255,.16)" stroke="rgba(169,139,255,.45)"></rect>
+          <text x="284" y="535" class="ts">…</text>
+          <rect class="box" x="272" y="544" width="496" height="18" rx="6" fill="rgba(169,139,255,.16)" stroke="rgba(169,139,255,.45)"></rect>
+          <text x="284" y="557" class="ts">中段输出 z<tspan font-size="9" dy="3">j</tspan>（192 个块级隐状态）</text>
+          <title>中段层（在缩短序列上）</title>
+        </g>
+
+        <path class="edge" d="M520,598 L520,608" marker-end="url(#ar)"></path>
+        <g class="node" data-node="expand">
+          <rect class="box" x="256" y="610" width="528" height="50" rx="12" fill="rgba(255,191,107,.10)" stroke="rgba(255,191,107,.55)"></rect>
+          <text x="272" y="632" class="t">↑ 展开 ×16：<tspan data-tiermid="midLen">192</tspan> → 3072 token ＋ 内容门控 g<tspan font-size="9" dy="3">t</tspan></text>
+          <text x="272" y="649" class="ts">展开投影：h → 16h；a_t ＋ g_t ⊙ u_t（g 由当前 token 决定，秩 64）</text>
+          <title>展开与内容门控</title>
+        </g>
+
+        <path class="edge" d="M520,660 L520,672" marker-end="url(#ar)"></path>
+        <g class="node" data-node="layer_full">
+          <rect x="256" y="674" width="528" height="110" rx="14" fill="rgba(63,227,255,.06)" stroke="rgba(63,227,255,.35)"></rect>
+        </g>
+        <text x="272" y="696" class="t">后段 <tspan data-tier="back">8</tspan> 层 · 逐 token（回到 L = 3072）</text>
+        <g class="node" data-node="layer_full">
+          <rect class="box" x="272" y="706" width="496" height="20" rx="7" fill="rgba(63,227,255,.14)" stroke="rgba(63,227,255,.4)"></rect>
+          <text x="284" y="720" class="ts">Layer <tspan data-tiermid="expandAt">第 31 层</tspan> · 恢复局部细节</text>
+          <rect class="box" x="272" y="730" width="496" height="20" rx="7" fill="rgba(63,227,255,.14)" stroke="rgba(63,227,255,.4)"></rect>
+          <text x="284" y="744" class="ts">…</text>
+          <rect class="box" x="272" y="754" width="496" height="20" rx="7" fill="rgba(63,227,255,.14)" stroke="rgba(63,227,255,.4)"></rect>
+          <text x="284" y="768" class="ts">最后一层 · 输出 → 最终 RMSNorm</text>
+          <title>后段层（逐 token）</title>
+        </g>
+
+        <!-- 输出链 -->
+        <path class="edge" d="M520,784 L520,802 L425,802 L425,820" marker-end="url(#ar)"></path>
+        <g class="node" data-node="norm_out">
+          <rect class="box" x="330" y="822" width="190" height="52" rx="12" fill="rgba(63,227,255,.08)" stroke="rgba(63,227,255,.45)"></rect>
+          <text x="342" y="844" class="t">最终 RMSNorm</text>
+          <text x="342" y="862" class="tm">＋ s_out·hint_rows</text>
+          <title>最终归一化与输出侧提示</title>
+        </g>
+        <path class="edge" d="M522,848 L548,848" marker-end="url(#ar)"></path>
+        <g class="node" data-node="lm_head">
+          <rect class="box" x="550" y="822" width="180" height="52" rx="12" fill="rgba(255,191,107,.09)" stroke="rgba(255,191,107,.5)"></rect>
+          <text x="562" y="844" class="t">输出层</text>
+          <text x="562" y="862" class="tm">h → 49152 · 训练部分列</text>
+          <title>输出层与 sampled softmax</title>
+        </g>
+        <path class="edge" d="M732,848 L756,848" marker-end="url(#ar)"></path>
+        <g class="node" data-node="lm_head">
+          <rect class="box" x="758" y="822" width="150" height="52" rx="12" fill="rgba(255,191,107,.06)" stroke="rgba(255,191,107,.35)"></rect>
+          <text x="770" y="844" class="t">logits</text>
+          <text x="770" y="862" class="tm">[B, 3072, 49152]</text>
+          <title>logits</title>
+        </g>
+        <path class="edge" d="M910,848 L934,848" marker-end="url(#ar)"></path>
+        <g class="node" data-node="hint_logit">
+          <rect class="box" x="936" y="822" width="190" height="52" rx="12" fill="rgba(255,122,198,.10)" stroke="rgba(255,122,198,.55)"></rect>
+          <text x="948" y="844" class="t">＋ 提示 bonus</text>
+          <text x="948" y="862" class="tm">加到 15 个候选的 logit</text>
+          <title>提示 logit 加分</title>
+        </g>
+        <path class="edge" d="M1128,848 L1152,848" marker-end="url(#ar)"></path>
+        <g class="node" data-node="loss">
+          <rect class="box" x="1154" y="822" width="76" height="52" rx="12" fill="rgba(76,230,168,.08)" stroke="rgba(76,230,168,.5)"></rect>
+          <text x="1162" y="844" class="t">bpb</text>
+          <text x="1162" y="862" class="tm">/ loss</text>
+          <title>交叉熵与评分</title>
+        </g>
+
+        <!-- 右侧查表资源 -->
+        <text x="820" y="166" class="ts">查表资源（四档共用结构）</text>
+
+        <g class="node" data-node="ve">
+          <rect class="box" x="820" y="180" width="392" height="86" rx="12" fill="rgba(76,230,168,.08)" stroke="rgba(76,230,168,.5)"></rect>
+          <text x="834" y="204" class="t">Value Embeddings × <tspan data-tier="veN">20</tspan></text>
+          <text x="834" y="224" class="tm">G 张 [49152, h] · 按 token 查</text>
+          <text x="834" y="242" class="ts">首尾对称层共用一张（(0,38),(1,37)…）</text>
+          <text x="834" y="258" class="ts">训练 · 不计 N/N_a · 0 矩阵乘</text>
+          <title>Value Embedding 表</title>
+        </g>
+        <path class="edge dash" d="M820,220 L806,220 L806,300 L800,300" stroke="rgba(76,230,168,.7)" marker-end="url(#arG)"></path>
+
+        <g class="node" data-node="nve">
+          <rect class="box" x="820" y="286" width="392" height="110" rx="12" fill="rgba(169,139,255,.09)" stroke="rgba(169,139,255,.5)"></rect>
+          <text x="834" y="310" class="t">N-gram Value 表（NVE）</text>
+          <text x="834" y="330" class="tm">2 阶 × 4 哈希组 × 1,048,576 桶</text>
+          <text x="834" y="348" class="ts">hash(x<tspan dy="4" font-size="8">t−n+1</tspan><tspan dy="-4">…x</tspan><tspan dy="4" font-size="8">t</tspan><tspan dy="-4">) → 每组 kv/4 维，拼成 kv</tspan></text>
+          <text x="834" y="368" class="ts">每层 λ 标量 + 逐 KV 头门控 2σ(W·h[:12])</text>
+          <text x="834" y="386" class="ts">训练 · 不计 N/N_a · 0 矩阵乘</text>
+          <title>N-gram Value Embeddings</title>
+        </g>
+        <path class="edge dash" d="M820,340 L808,340 L808,368 L800,368" stroke="rgba(169,139,255,.75)" marker-end="url(#arV)"></path>
+
+        <g class="node" data-node="hint_tab">
+          <rect class="box" x="820" y="416" width="392" height="180" rx="12" fill="rgba(255,122,198,.09)" stroke="rgba(255,122,198,.55)"></rect>
+          <text x="834" y="440" class="t">n-gram 提示表（只读统计）</text>
+          <text x="834" y="460" class="tm">6 阶：2 / 3 / 4 / 6 / 10 / 20</text>
+          <text x="834" y="478" class="ts">每槽 5 字节：fp16 指纹 + token(16b) + 类别(8b)</text>
+          <text x="834" y="496" class="ts">每阶前 4/4/3/2/1/1 个后继 → 15 列</text>
+          <text x="834" y="514" class="ts">槽数 2²⁸ ~ 2³²；类别 = 7 次数桶 × 6 纯度桶</text>
+          <text x="834" y="532" class="ts">≈112 GB · 只读 · 训练 / 推理都用</text>
+          <text x="834" y="552" class="ts">训练时建表/训练数据 75% / 25% 互斥</text>
+          <text x="834" y="572" class="ts">提交表：100% 训练语料，54.88 B token 统计</text>
+          <title>n-gram 提示表</title>
+        </g>
+
+        <path class="edge dash" d="M820,470 L812,470 L812,140 L222,140 L222,296 L230,296" stroke="rgba(255,122,198,.75)" marker-end="url(#arP)"></path>
+        <text x="500" y="132" class="ts" text-anchor="middle" fill="#ff9dd2">提示 token + 类别 → 输入嵌入向量</text>
+
+        <path class="edge dash" d="M1212,470 L1228,470 L1228,798 L1029,798 L1029,818" stroke="rgba(255,122,198,.75)" marker-end="url(#arP)"></path>
+        <text x="1120" y="790" class="ts" text-anchor="middle" fill="#ff9dd2">bonus → logit 加分</text>
+
+        <g class="node" data-node="hint_cls">
+          <rect class="box" x="820" y="616" width="392" height="84" rx="12" fill="rgba(255,122,198,.06)" stroke="rgba(255,122,198,.35)"></rect>
+          <text x="834" y="640" class="t">提示类别嵌入（可学习 · 631 类）</text>
+          <text x="834" y="660" class="tm">amount [631,1] · feat [631,h] · logit [631,1]</text>
+          <text x="834" y="678" class="ts">信任度 1+amount · 类别向量 feat · logit bonus</text>
+          <text x="834" y="694" class="ts">全部零初始化 → 起步时等于没有提示</text>
+          <title>提示类别嵌入</title>
+        </g>
+        <path class="edge" d="M1016,616 L1016,598" marker-end="url(#arP)" stroke="rgba(255,122,198,.6)"></path>
+
+        <!-- 备注 -->
+        <text x="820" y="736" class="ts">中段 60% 的层在 L/16 上计算；</text>
+        <text x="820" y="752" class="ts">VE / NVE / 提示表都是查表，</text>
+        <text x="820" y="768" class="ts">不计入 N、N_a 与 FLOPs。</text>
+        <text x="820" y="792" class="ts" fill="#ffbf6b">点任意方框看细节 →</text>
+      </svg>
+    </div>
+    <div class="legend">
+      <span><i style="background:rgba(63,227,255,.75)"></i>Transformer 层 / 主干</span>
+      <span><i style="background:rgba(255,191,107,.85)"></i>压缩与展开</span>
+      <span><i style="background:rgba(76,230,168,.85)"></i>Value Embeddings</span>
+      <span><i style="background:rgba(169,139,255,.9)"></i>N-gram Value 表</span>
+      <span><i style="background:rgba(255,122,198,.9)"></i>hint 提示表</span>
+    </div>
+    <p class="small" style="margin-top:6px">点击图中任意方框 → 跳到下方「单层解剖」并显示该模块的公式、形状与作用。</p>
+
+    <h3 style="margin:36px 0 6px;font-size:20px">单层解剖</h3>
+    <p class="sec-sub" style="margin-bottom:12px">一层 = 预归一化 + 注意力（QK-Norm / RoPE / 输出门）+ 预归一化 + MLP。下面是层内结构图，右侧可点选模块看细节。</p>
+    <div class="diagram-shell" style="margin-bottom:18px">
+<svg viewBox="0 0 1040 300" role="img" aria-label="单层内部结构">
+        <defs>
+          <marker id="ar2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="rgba(150,175,255,.7)"></path>
+          </marker>
+        </defs>
+        <text x="20" y="28" class="ts">一层 = 预归一化 + 注意力（含查表混合）+ 预归一化 + MLP（ReLU²）</text>
+
+        <g class="node" data-node="layer_full">
+          <rect class="box" x="20" y="120" width="90" height="56" rx="12" fill="rgba(63,227,255,.08)" stroke="rgba(63,227,255,.45)"></rect>
+          <text x="42" y="152" class="t">x<tspan dy="4" font-size="8">t</tspan></text>
+          <title>输入隐状态</title>
+        </g>
+        <path class="edge" d="M110,148 L130,148" marker-end="url(#ar2)"></path>
+        <g class="node" data-node="layer_full">
+          <rect class="box" x="132" y="120" width="106" height="56" rx="12" fill="rgba(140,170,255,.10)" stroke="rgba(140,170,255,.45)"></rect>
+          <text x="146" y="152" class="t">RMSNorm</text>
+          <title>预归一化</title>
+        </g>
+        <path class="edge" d="M238,148 L258,148" marker-end="url(#ar2)"></path>
+
+        <g class="node" data-node="attn">
+          <rect class="box" x="260" y="96" width="262" height="104" rx="14" fill="rgba(63,227,255,.08)" stroke="rgba(63,227,255,.5)"></rect>
+          <text x="274" y="120" class="t">注意力（因果）</text>
+          <text x="274" y="140" class="ts">q/k/v 投影；QK-Norm(128)；RoPE θ=10000</text>
+          <text x="274" y="158" class="ts">v ← λ₀·v + λ₁·VE[x] + λ₂·NVE₂ + λ₃·NVE₃</text>
+          <text x="274" y="176" class="ts">o = 2σ(W_g·x) ⊙ 注意力(q,k,v) ；输出 W_o·o</text>
+          <text x="274" y="194" class="ts" fill="#ffbf6b">全长层按头门控 · 中段按通道门控</text>
+          <title>注意力细节</title>
+        </g>
+        <path class="edge" d="M522,148 L542,148" marker-end="url(#ar2)"></path>
+
+        <g class="node" data-node="layer_full">
+          <rect class="box" x="544" y="120" width="42" height="56" rx="12" fill="rgba(76,230,168,.10)" stroke="rgba(76,230,168,.5)"></rect>
+          <text x="562" y="154" class="t">＋</text>
+          <title>残差相加</title>
+        </g>
+        <path class="edge" d="M586,148 L606,148" marker-end="url(#ar2)"></path>
+        <g class="node" data-node="layer_full">
+          <rect class="box" x="608" y="120" width="106" height="56" rx="12" fill="rgba(140,170,255,.10)" stroke="rgba(140,170,255,.45)"></rect>
+          <text x="622" y="152" class="t">RMSNorm</text>
+          <title>预归一化</title>
+        </g>
+        <path class="edge" d="M714,148 L734,148" marker-end="url(#ar2)"></path>
+        <g class="node" data-node="layer">
+          <rect class="box" x="736" y="96" width="196" height="104" rx="14" fill="rgba(255,191,107,.09)" stroke="rgba(255,191,107,.55)"></rect>
+          <text x="750" y="120" class="t">MLP（两矩阵）</text>
+          <text x="750" y="140" class="ts">u = W_up · x  ： h → <tspan data-tier="inter">3072</tspan></text>
+          <text x="750" y="158" class="ts">a = ReLU(u)²   （不是 SwiGLU）</text>
+          <text x="750" y="176" class="ts">y = W_down · a ： <tspan data-tier="inter">3072</tspan> → h</text>
+          <text x="750" y="194" class="ts" fill="#ffbf6b">参数/FLOPs 省 1/3</text>
+          <title>MLP</title>
+        </g>
+        <path class="edge" d="M932,148 L952,148" marker-end="url(#ar2)"></path>
+        <g class="node" data-node="layer_full">
+          <rect class="box" x="954" y="120" width="42" height="56" rx="12" fill="rgba(76,230,168,.10)" stroke="rgba(76,230,168,.5)"></rect>
+          <text x="972" y="154" class="t">＋</text>
+          <title>残差相加</title>
+        </g>
+        <path class="edge" d="M996,148 L1020,148" marker-end="url(#ar2)"></path>
+        <text x="1000" y="118" class="ts">下一层</text>
+
+        <!-- 残差 -->
+        <path class="edge dash" d="M65,120 L65,78 L565,78 L565,118" marker-end="url(#ar2)"></path>
+        <path class="edge dash" d="M565,178 L565,236 L975,236 L975,178" marker-end="url(#ar2)"></path>
+        <text x="300" y="70" class="ts">残差（identity）</text>
+
+        <!-- 查表来源 -->
+        <g class="node" data-node="ve">
+          <rect class="box" x="260" y="238" width="150" height="40" rx="10" fill="rgba(76,230,168,.08)" stroke="rgba(76,230,168,.45)"></rect>
+          <text x="272" y="263" class="ts" fill="#8ff0cd">VE[x]  按 token 查</text>
+          <title>Value Embedding</title>
+        </g>
+        <g class="node" data-node="nve">
+          <rect class="box" x="420" y="238" width="180" height="40" rx="10" fill="rgba(169,139,255,.09)" stroke="rgba(169,139,255,.45)"></rect>
+          <text x="432" y="263" class="ts" fill="#c9b6ff">NVE  按 2/3-gram 哈希查</text>
+          <title>N-gram Value Embedding</title>
+        </g>
+        <path class="edge dash" d="M335,238 L335,204" stroke="rgba(76,230,168,.6)" marker-end="url(#ar2)"></path>
+        <path class="edge dash" d="M510,238 L510,204" stroke="rgba(169,139,255,.6)" marker-end="url(#ar2)"></path>
+      </svg>
+    </div>
+
+    <div class="detail">
+      <div class="menu" id="modMenu"></div>
+      <div class="panel" id="modPanel"></div>
+    </div>
+
+    <h3 style="margin:36px 0 6px;font-size:20px">四档尺寸</h3>
+    <div class="tbl-wrap">
+      <table class="tbl" id="tierTable">
+        <thead><tr><th>档位</th><th>hidden</th><th>层数</th><th>头数×head_dim</th><th>MLP 中间维</th><th>N = N_a</th><th>模型 FLOPs/token</th><th>训练 token</th></tr></thead>
+        <tbody>
+          <tr data-tier-row="3e17"><td><b>3e17</b></td><td>640</td><td>18（4+10+4）</td><td>5 × 128</td><td>1728</td><td>86,657,522</td><td>1.5277e8</td><td>854,589,440</td></tr>
+          <tr data-tier-row="1e18"><td><b>1e18</b></td><td>768</td><td>26（5+16+5）</td><td>6 × 128</td><td>2048</td><td>171,652,698</td><td>2.3209e8</td><td>1,754,791,936</td></tr>
+          <tr data-tier-row="3e18"><td><b>3e18</b></td><td>1024</td><td>29（6+17+6）</td><td>8 × 128</td><td>2752</td><td>336,784,918</td><td>4.4029e8</td><td>2,596,012,032</td></tr>
+          <tr data-tier-row="1e19"><td><b>1e19</b></td><td>1152</td><td>39（8+23+8）</td><td>9 × 128</td><td>3072</td><td>556,503,290</td><td>6.6886e8</td><td>5,485,756,416</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="small" style="margin-top:8px">N = N_a 是非词表激活参数（嵌入表、输出层、VE/NVE 表不计）；FLOPs/token 按训练序列长度、全词表输出层计算。</p>
+  </div>
+</section>
+
+<section class="section" id="compress">
+  <div class="wrap">
+    <div class="sec-head"><span class="sec-num">02</span><h2>Token 压缩技术：16 个 token → 1 个位置</h2></div>
+    <p class="sec-sub">
+      压缩只发生在层栈的中段：前 20% 层逐 token 算，中间约 60% 层在“16 个 token 合成 1 个位置”的短序列上算，后 20% 层再回到逐 token。
+      它是一次<b>序列长度上的下采样（3072 → 192）</b>，不是特征维降维（h 不变）。
+    </p>
+
+    <div class="grid g3">
+      <div class="card">
+        <h3>为什么压</h3>
+        <p>注意力核心开销 ∝ 序列长度的平方。中段把长度 ÷16：线性层计算 ÷16，注意力核心 ÷256；同样的参数与算力可以多看几倍 token。</p>
+      </div>
+      <div class="card">
+        <h3>压完是什么</h3>
+        <p>得到 192 个“摘要位置”，每个位置包含原序列连续 16 个 token 的信息；中段在这些位置上做全局注意力。</p>
+      </div>
+      <div class="card">
+        <h3>代价</h3>
+        <p>一个位置代表 16 个 token，是有损压缩。靠前后的全长层、展开的内容门控、以及压缩前的残差来补细节。</p>
+      </div>
+    </div>
+
+    <h3 style="margin:34px 0 6px;font-size:19px">① 怎么压：拼接 + 线性投影</h3>
+    <div class="twocol">
+      <div>
+        <p>在第 s 层（前段最后一层）之后，先保存一份全长残差 <code>a = x</code>（<code>[B, 3072, h]</code>），然后：</p>
+        <div class="fbox">x_pad = 序列前面补 15 个零向量        # [B, 3072+15, h]
+每 16 个连续向量拼接成一个 16h 向量      # [B, 192, 16h]
+z = W_down · concat                     # [B, 192, h]
+
+W_down : [h, 16h]（无 bias 的线性层）
+1e19：h = 1152，16h = 18432</div>
+        <p>所以压缩后的第 j 个位置，正好包含原序列 <b>token 16j−15 … 16j</b> 这 16 个 token 的隐状态。第 0 块前面是补的零。窗口互不重叠、严格因果。</p>
+      </div>
+      <div class="card" style="margin:0">
+        <h3 style="font-size:15px">一个具体数字（1e19）</h3>
+        <div class="kv">
+          <div class="row"><span>原序列</span><span>3072</span></div>
+          <div class="row"><span>压缩后</span><span>192</span></div>
+          <div class="row"><span>每个位置拼接</span><span>16 × 1152 = 18432</span></div>
+          <div class="row"><span>W_down</span><span>18432 → 1152</span></div>
+          <div class="row"><span>窗口 j</span><span>token 16j−15 … 16j</span></div>
+        </div>
+        <p class="small" style="margin-top:10px">训练/评测序列长度都是 16 的整数倍；不是整数倍时末尾补零，只影响最后一个位置。</p>
+      </div>
+    </div>
+
+    <h3 style="margin:34px 0 6px;font-size:19px">② 压缩后“位置”怎么定：不是新 token id，是块号 j</h3>
+    <div class="card">
+      <p><b>token id 不变。</b>token id 由分词器决定（BPE 词表 49152），压缩不会重新编号，也不会生成新的 token id；被压缩的是<b>隐状态序列</b>。</p>
+      <p style="margin-top:8px">压缩后得到 192 个位置，位置编号是 <b>j = 0 … 191</b>（块号）。每个位置 j 对应原序列的 16 个 token，但它在中段里只占 1 个位置：</p>
+      <div class="fbox">中段 RoPE 位置 = 块号 j（0 … 191）
+中段因果 mask  = 192 × 192 的因果矩阵
+中段 attention 的“序列长度” = 192</div>
+      <p style="margin-top:8px">所以压缩改变的只是“序列有多长、每个位置代表多少 token”，没有改变 token 本身的 id。</p>
+    </div>
+
+    <h3 style="margin:34px 0 6px;font-size:19px">③ 怎么恢复：上投影 + 按块切片 + 内容门控 + 残差</h3>
+    <div class="twocol">
+      <div>
+        <p>中段算完后，把 192 个位置展开回 3072 个 token：</p>
+        <div class="fbox">u = W_up · z                        # [B, 192, 16h]
+reshape 成 [B, 192, 16, h]
+
+token t 取第 ⌊t/16⌋ 块的第 (t mod 16) 片：
+u_t = u[⌊t/16⌋, t mod 16]
+
+g_t = 2σ( W_out·W_in·RMSNorm(a_t) + β_{t mod 16} )   # 秩 64
+x_t = a_t + g_t ⊙ u_t               # 加回压缩前残差</div>
+        <p>关键点：<b>展开不是简单复制</b>。块内 16 个 token 共享同一个摘要，但每个 token 用自己的门 <code>g_t</code> 决定读回多少；再与压缩前的残差 <code>a_t</code> 相加，所以中段只是“残差流里的一个低分辨率处理块”。</p>
+      </div>
+      <div class="card" style="margin:0">
+        <h3 style="font-size:15px">为什么能恢复出细节</h3>
+        <ul style="margin:6px 0 0;padding-left:20px;color:var(--muted);font-size:14px">
+          <li>压缩前的全长残差 <code>a_t</code> 一直在，每个 token 的原始信息不会丢；</li>
+          <li>内容门 <code>g_t</code> 由当前 token 自己的全长隐状态算出，逐 token 决定读多少摘要；</li>
+          <li>后段 20% 的层回到全分辨率，继续做逐 token 的注意力与 MLP。</li>
+        </ul>
+        <p class="small" style="margin-top:10px">这就是“U-Net / Hourglass”式的结构：下采样 → 低分辨率处理 → 上采样 → 跳连（残差）。</p>
+      </div>
+    </div>
+
+    <h3 style="margin:34px 0 6px;font-size:19px">④ 压缩 / 展开总图</h3>
+    <div class="diagram-shell">
+<svg viewBox="0 0 1240 810" role="img" aria-label="16 个 token 压缩为 1 个位置、再展开回 16 个 token 的示意图">
+<defs>
+  <marker id="cw-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+    <path d="M0,0 L10,5 L0,10 z" fill="rgba(150,175,255,.75)"></path>
+  </marker>
+  <marker id="cw-arG" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+    <path d="M0,0 L10,5 L0,10 z" fill="#4ce6a8"></path>
+  </marker>
+  <marker id="cw-arP" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+    <path d="M0,0 L10,5 L0,10 z" fill="#ff7ac6"></path>
+  </marker>
+</defs>
+<text x="30" y="30" class="t" style="font-size:14.5px;font-weight:700">① 压缩：16 个相邻 token → 1 个位置（k = 16）</text>
+<text x="30" y="52" class="ts">以 1e19 为例：L = 3072 → 192，h = 1152；压缩窗口 = token 16j−15 … 16j</text>
+<text x="30" y="76" class="ts">全长隐状态 a（每个 token 一个 h 维向量；先保存，展开时加回）</text>
+<rect x="30" y="86" width="24" height="42" rx="5" fill="rgba(63,227,255,.16)" stroke="rgba(63,227,255,.55)"></rect>
+<rect x="58" y="86" width="24" height="42" rx="5" fill="rgba(63,227,255,.16)" stroke="rgba(63,227,255,.55)"></rect>
+<rect x="86" y="86" width="24" height="42" rx="5" fill="rgba(63,227,255,.16)" stroke="rgba(63,227,255,.55)"></rect>
+<rect x="114" y="86" width="24" height="42" rx="5" fill="rgba(63,227,255,.16)" stroke="rgba(63,227,255,.55)"></rect>
+<rect x="142" y="86" width="24" height="42" rx="5" fill="rgba(63,227,255,.16)" stroke="rgba(63,227,255,.55)"></rect>
+<rect x="170" y="86" width="24" height="42" rx="5" fill="rgba(63,227,255,.16)" stroke="rgba(63,227,255,.55)"></rect>
+<rect x="198" y="86" width="24" height="42" rx="5" fill="rgba(63,227,255,.16)" stroke="rgba(63,227,255,.55)"></rect>
+<rect x="226" y="86" width="24" height="42" rx="5" fill="rgba(63,227,255,.16)" stroke="rgba(63,227,255,.55)"></rect>
+<rect x="254" y="86" width="24" height="42" rx="5" fill="rgba(63,227,255,.16)" stroke="rgba(63,227,255,.55)"></rect>
+<rect x="282" y="86" width="24" height="42" rx="5" fill="rgba(63,227,255,.16)" stroke="rgba(63,227,255,.55)"></rect>
+<rect x="310" y="86" width="24" height="42" rx="5" fill="rgba(63,227,255,.16)" stroke="rgba(63,227,255,.55)"></rect>
+<rect x="338" y="86" width="24" height="42" rx="5" fill="rgba(63,227,255,.16)" stroke="rgba(63,227,255,.55)"></rect>
+<rect x="366" y="86" width="24" height="42" rx="5" fill="rgba(63,227,255,.16)" stroke="rgba(63,227,255,.55)"></rect>
+<rect x="394" y="86" width="24" height="42" rx="5" fill="rgba(63,227,255,.16)" stroke="rgba(63,227,255,.55)"></rect>
+<rect x="422" y="86" width="24" height="42" rx="5" fill="rgba(63,227,255,.16)" stroke="rgba(63,227,255,.55)"></rect>
+<rect x="450" y="86" width="24" height="42" rx="5" fill="rgba(63,227,255,.16)" stroke="rgba(63,227,255,.55)"></rect>
+<text x="486" y="114" class="ts">…</text>
+<rect x="24" y="80" width="456" height="54" rx="10" fill="none" stroke="rgba(255,191,107,.85)" stroke-width="1.6" stroke-dasharray="6 4"></rect>
+<text x="30" y="152" class="ts" fill="#ffbf6b">窗口：token 16j−15 … 16j（16 个相邻 token，属于第 j 块）</text>
+<path class="edge" d="M252,160 L252,186" marker-end="url(#cw-ar)"></path>
+<rect x="44" y="188" width="20" height="64" rx="4" fill="rgba(63,227,255,.10)" stroke="rgba(63,227,255,.45)"></rect>
+<rect x="70" y="188" width="20" height="64" rx="4" fill="rgba(63,227,255,.10)" stroke="rgba(63,227,255,.45)"></rect>
+<rect x="96" y="188" width="20" height="64" rx="4" fill="rgba(63,227,255,.10)" stroke="rgba(63,227,255,.45)"></rect>
+<rect x="122" y="188" width="20" height="64" rx="4" fill="rgba(63,227,255,.10)" stroke="rgba(63,227,255,.45)"></rect>
+<rect x="148" y="188" width="20" height="64" rx="4" fill="rgba(63,227,255,.10)" stroke="rgba(63,227,255,.45)"></rect>
+<rect x="174" y="188" width="20" height="64" rx="4" fill="rgba(63,227,255,.10)" stroke="rgba(63,227,255,.45)"></rect>
+<rect x="200" y="188" width="20" height="64" rx="4" fill="rgba(63,227,255,.10)" stroke="rgba(63,227,255,.45)"></rect>
+<rect x="226" y="188" width="20" height="64" rx="4" fill="rgba(63,227,255,.10)" stroke="rgba(63,227,255,.45)"></rect>
+<rect x="252" y="188" width="20" height="64" rx="4" fill="rgba(63,227,255,.10)" stroke="rgba(63,227,255,.45)"></rect>
+<rect x="278" y="188" width="20" height="64" rx="4" fill="rgba(63,227,255,.10)" stroke="rgba(63,227,255,.45)"></rect>
+<rect x="304" y="188" width="20" height="64" rx="4" fill="rgba(63,227,255,.10)" stroke="rgba(63,227,255,.45)"></rect>
+<rect x="330" y="188" width="20" height="64" rx="4" fill="rgba(63,227,255,.10)" stroke="rgba(63,227,255,.45)"></rect>
+<rect x="356" y="188" width="20" height="64" rx="4" fill="rgba(63,227,255,.10)" stroke="rgba(63,227,255,.45)"></rect>
+<rect x="382" y="188" width="20" height="64" rx="4" fill="rgba(63,227,255,.10)" stroke="rgba(63,227,255,.45)"></rect>
+<rect x="408" y="188" width="20" height="64" rx="4" fill="rgba(63,227,255,.10)" stroke="rgba(63,227,255,.45)"></rect>
+<rect x="434" y="188" width="20" height="64" rx="4" fill="rgba(63,227,255,.10)" stroke="rgba(63,227,255,.45)"></rect>
+<text x="44" y="272" class="ts">每个 token 是一个 h 维向量</text>
+<path class="edge" d="M252,280 L252,300" marker-end="url(#cw-ar)"></path>
+<rect x="44" y="302" width="410" height="40" rx="10" fill="rgba(255,191,107,.10)" stroke="rgba(255,191,107,.55)"></rect>
+<text x="60" y="327" class="t">按顺序拼接：16h 维（16 × 1152 = 18432）</text>
+<path class="edge" d="M454,322 L486,322" marker-end="url(#cw-ar)"></path>
+<rect x="488" y="294" width="150" height="56" rx="12" fill="rgba(255,191,107,.14)" stroke="rgba(255,191,107,.75)"></rect>
+<text x="502" y="317" class="t">W_down</text>
+<text x="502" y="337" class="tm">16h → h</text>
+<path class="edge" d="M638,322 L670,322" marker-end="url(#cw-ar)"></path>
+<rect x="672" y="294" width="120" height="56" rx="12" fill="rgba(169,139,255,.14)" stroke="rgba(169,139,255,.75)"></rect>
+<text x="688" y="317" class="t">z_j</text>
+<text x="688" y="337" class="tm">[h]</text>
+<text x="488" y="372" class="ts">16 个 token 融合成 1 个 h 维摘要</text>
+<text x="672" y="372" class="ts">第 j 个压缩位置（j = 0 … 191）</text>
+<text x="30" y="414" class="t" style="font-size:13.5px;font-weight:700">中段：在 192 个压缩位置上跑 L_mid 层 Transformer</text>
+<text x="30" y="434" class="ts">RoPE 位置 = 块号 0 … 191；因果 mask 在 192 的长度上；每层参数与全长层同构</text>
+<rect x="30" y="448" width="18" height="28" rx="4" fill="rgba(169,139,255,.12)" stroke="rgba(169,139,255,.45)"></rect>
+<rect x="52" y="448" width="18" height="28" rx="4" fill="rgba(169,139,255,.12)" stroke="rgba(169,139,255,.45)"></rect>
+<rect x="74" y="448" width="18" height="28" rx="4" fill="rgba(169,139,255,.12)" stroke="rgba(169,139,255,.45)"></rect>
+<rect x="96" y="448" width="18" height="28" rx="4" fill="rgba(169,139,255,.12)" stroke="rgba(169,139,255,.45)"></rect>
+<rect x="118" y="448" width="18" height="28" rx="4" fill="rgba(169,139,255,.12)" stroke="rgba(169,139,255,.45)"></rect>
+<rect x="140" y="448" width="18" height="28" rx="4" fill="rgba(169,139,255,.12)" stroke="rgba(169,139,255,.45)"></rect>
+<rect x="162" y="448" width="18" height="28" rx="4" fill="rgba(169,139,255,.12)" stroke="rgba(169,139,255,.45)"></rect>
+<rect x="184" y="448" width="18" height="28" rx="4" fill="rgba(169,139,255,.12)" stroke="rgba(169,139,255,.45)"></rect>
+<rect x="206" y="448" width="18" height="28" rx="4" fill="rgba(169,139,255,.28)" stroke="rgba(169,139,255,.9)"></rect>
+<rect x="228" y="448" width="18" height="28" rx="4" fill="rgba(169,139,255,.12)" stroke="rgba(169,139,255,.45)"></rect>
+<rect x="250" y="448" width="18" height="28" rx="4" fill="rgba(169,139,255,.12)" stroke="rgba(169,139,255,.45)"></rect>
+<rect x="272" y="448" width="18" height="28" rx="4" fill="rgba(169,139,255,.12)" stroke="rgba(169,139,255,.45)"></rect>
+<rect x="294" y="448" width="18" height="28" rx="4" fill="rgba(169,139,255,.12)" stroke="rgba(169,139,255,.45)"></rect>
+<rect x="316" y="448" width="18" height="28" rx="4" fill="rgba(169,139,255,.12)" stroke="rgba(169,139,255,.45)"></rect>
+<rect x="338" y="448" width="18" height="28" rx="4" fill="rgba(169,139,255,.12)" stroke="rgba(169,139,255,.45)"></rect>
+<rect x="360" y="448" width="18" height="28" rx="4" fill="rgba(169,139,255,.12)" stroke="rgba(169,139,255,.45)"></rect>
+<rect x="382" y="448" width="18" height="28" rx="4" fill="rgba(169,139,255,.12)" stroke="rgba(169,139,255,.45)"></rect>
+<rect x="404" y="448" width="18" height="28" rx="4" fill="rgba(169,139,255,.12)" stroke="rgba(169,139,255,.45)"></rect>
+<rect x="426" y="448" width="18" height="28" rx="4" fill="rgba(169,139,255,.12)" stroke="rgba(169,139,255,.45)"></rect>
+<rect x="448" y="448" width="18" height="28" rx="4" fill="rgba(169,139,255,.12)" stroke="rgba(169,139,255,.45)"></rect>
+<text x="472" y="467" class="ts">…</text>
+<rect x="492" y="448" width="18" height="28" rx="4" fill="rgba(169,139,255,.12)" stroke="rgba(169,139,255,.45)"></rect>
+<text x="26" y="496" class="ts">位置 0</text>
+<text x="188" y="496" class="ts">位置 j</text>
+<text x="474" y="496" class="ts">位置 191</text>
+<text x="30" y="520" class="ts" fill="#ffbf6b">代价：线性计算 ÷16，注意力核心 ÷256（192 对 3072）</text>
+<text x="30" y="566" class="t" style="font-size:14.5px;font-weight:700">② 展开：1 个位置 → 16 个 token，并加回压缩前的残差</text>
+<rect x="30" y="586" width="100" height="50" rx="10" fill="rgba(169,139,255,.14)" stroke="rgba(169,139,255,.75)"></rect>
+<text x="44" y="608" class="t">z_j</text>
+<text x="44" y="626" class="tm">[h]</text>
+<path class="edge" d="M130,611 L160,611" marker-end="url(#cw-ar)"></path>
+<rect x="162" y="584" width="140" height="54" rx="11" fill="rgba(255,191,107,.14)" stroke="rgba(255,191,107,.75)"></rect>
+<text x="176" y="606" class="t">W_up</text>
+<text x="176" y="625" class="tm">h → 16h</text>
+<path class="edge" d="M302,611 L332,611" marker-end="url(#cw-ar)"></path>
+<rect x="334" y="590" width="18" height="42" rx="4" fill="rgba(169,139,255,.14)" stroke="rgba(169,139,255,.55)"></rect>
+<rect x="356" y="590" width="18" height="42" rx="4" fill="rgba(169,139,255,.14)" stroke="rgba(169,139,255,.55)"></rect>
+<rect x="378" y="590" width="18" height="42" rx="4" fill="rgba(169,139,255,.14)" stroke="rgba(169,139,255,.55)"></rect>
+<rect x="400" y="590" width="18" height="42" rx="4" fill="rgba(169,139,255,.14)" stroke="rgba(169,139,255,.55)"></rect>
+<rect x="422" y="590" width="18" height="42" rx="4" fill="rgba(169,139,255,.14)" stroke="rgba(169,139,255,.55)"></rect>
+<rect x="444" y="590" width="18" height="42" rx="4" fill="rgba(169,139,255,.14)" stroke="rgba(169,139,255,.55)"></rect>
+<rect x="466" y="590" width="18" height="42" rx="4" fill="rgba(169,139,255,.14)" stroke="rgba(169,139,255,.55)"></rect>
+<rect x="488" y="590" width="18" height="42" rx="4" fill="rgba(169,139,255,.14)" stroke="rgba(169,139,255,.55)"></rect>
+<rect x="510" y="590" width="18" height="42" rx="4" fill="rgba(169,139,255,.14)" stroke="rgba(169,139,255,.55)"></rect>
+<rect x="532" y="590" width="18" height="42" rx="4" fill="rgba(169,139,255,.14)" stroke="rgba(169,139,255,.55)"></rect>
+<rect x="554" y="590" width="18" height="42" rx="4" fill="rgba(169,139,255,.14)" stroke="rgba(169,139,255,.55)"></rect>
+<rect x="576" y="590" width="18" height="42" rx="4" fill="rgba(169,139,255,.14)" stroke="rgba(169,139,255,.55)"></rect>
+<rect x="598" y="590" width="18" height="42" rx="4" fill="rgba(169,139,255,.14)" stroke="rgba(169,139,255,.55)"></rect>
+<rect x="620" y="590" width="18" height="42" rx="4" fill="rgba(169,139,255,.14)" stroke="rgba(169,139,255,.55)"></rect>
+<rect x="642" y="590" width="18" height="42" rx="4" fill="rgba(169,139,255,.14)" stroke="rgba(169,139,255,.55)"></rect>
+<rect x="664" y="590" width="18" height="42" rx="4" fill="rgba(169,139,255,.14)" stroke="rgba(169,139,255,.55)"></rect>
+<text x="334" y="652" class="ts">u_j 切成 16 片（每片 h 维）</text>
+<path class="edge" d="M520,632 L520,654" marker-end="url(#cw-ar)"></path>
+<rect x="330" y="656" width="410" height="54" rx="10" fill="rgba(76,230,168,.08)" stroke="rgba(76,230,168,.55)"></rect>
+<text x="344" y="676" class="ts">g_t = 2σ( W_out·W_in·RMSNorm(a_t) + β_{t mod 16} )</text>
+<text x="344" y="696" class="ts">乘门控后输出 g_t ⊙ u_t（秩 64，零初始化 → 起步 g = 1）</text>
+<path class="edge" d="M740,683 L768,683" marker-end="url(#cw-arG)"></path>
+<circle cx="784" cy="683" r="15" fill="rgba(255,122,198,.10)" stroke="rgba(255,122,198,.7)"></circle>
+<text x="776" y="688" class="t">＋</text>
+<path class="edge" d="M799,683 L826,683" marker-end="url(#cw-ar)"></path>
+<rect x="828" y="657" width="200" height="52" rx="10" fill="rgba(63,227,255,.10)" stroke="rgba(63,227,255,.6)"></rect>
+<text x="842" y="680" class="t">x_t = a_t + g_t ⊙ u_t</text>
+<text x="842" y="698" class="ts">t = 16j … 16j+15</text>
+<path class="edge dash" d="M30,107 L14,107 L14,734 L784,734 L784,698" stroke="rgba(255,122,198,.85)" marker-end="url(#cw-arP)"></path>
+<text x="300" y="728" class="ts" fill="#ff9dd2">a_t：压缩前保存的全长残差（逐 token 加回）</text>
+<rect x="860" y="86" width="334" height="140" rx="12" fill="rgba(140,170,255,.04)" stroke="rgba(140,170,255,.25)"></rect>
+<text x="876" y="108" class="ts" style="font-size:11px;letter-spacing:1px">图例</text>
+<rect x="876" y="120" width="14" height="14" rx="3" fill="rgba(63,227,255,.35)" stroke="rgba(63,227,255,.7)"></rect>
+<text x="900" y="132" class="ts">token / 隐状态向量（h 维）</text>
+<rect x="876" y="142" width="14" height="14" rx="3" fill="rgba(169,139,255,.35)" stroke="rgba(169,139,255,.7)"></rect>
+<text x="900" y="154" class="ts">压缩位置 z（16 个 token 的摘要）</text>
+<rect x="876" y="164" width="14" height="14" rx="3" fill="rgba(255,191,107,.30)" stroke="rgba(255,191,107,.8)"></rect>
+<text x="900" y="176" class="ts">线性投影矩阵（W_down / W_up）</text>
+<path d="M876,198 L890,198" stroke="rgba(255,122,198,.9)" stroke-dasharray="5 4" stroke-width="1.5"></path>
+<text x="900" y="202" class="ts">残差 a（压缩前保存，展开时加回）</text>
+<text x="30" y="768" class="ts" fill="#ffbf6b">因果性：块 j 的摘要只包含 token ≤ 16j，而它展开服务的 token 是 16j … 16j+15 —— 每个 token 读到的信息都不含未来。</text>
+<text x="30" y="788" class="ts">注意窗口终点 16j 与展开起点 16j 是同一个 token：摘要恰好止于该块第一个输出 token 自己。</text>
+</svg>
+    </div>
+    <div class="note warn">
+      因果性：块 j 的摘要只包含 token ≤ 16j，而它展开服务的 token 是 16j … 16j+15——每个 token 读到的信息都不含未来。
+      注意窗口终点 16j 与展开起点 16j 是同一个 token：摘要恰好止于该块第一个输出 token 自己。
+    </div>
+  </div>
+</section>
+
+<section class="section" id="ve">
+  <div class="wrap">
+    <div class="sec-head"><span class="sec-num">03</span><h2>VE 表：按当前 token 查表，加进注意力 V</h2></div>
+    <p class="sec-sub">
+      VE = <b>Value Embeddings</b>。一句话：给每个 token 的 Value 加一条“我是谁”的可学习旁路。
+      它不改 q/k、不改注意力分数，只改被注意力聚合的 <b>v</b>；查表没有矩阵乘，是“免费容量”。
+    </p>
+
+    <div class="twocol">
+      <div class="card" style="margin:0">
+        <h3>干什么用</h3>
+        <p>注意力的输出是 <code>Σ softmax(q·k)·v</code>，<b>v 才是真正被加权求和的内容</b>。标准 Transformer 的 v 完全来自 <code>W_v·h</code>；VE 额外查出一段向量加进 v。</p>
+        <p>直觉：哪怕注意力权重很分散，每个 token 的 value 里也始终带着自己的身份/类型信息，模型不用全靠 <code>W_v</code> 去记。</p>
+        <h3 style="margin-top:14px">用在哪</h3>
+        <p>每一层注意力内部：<b>V 的线性投影之后、分头与因果注意力之前</b>。中段缩短时只在块尾 token 处查（每 16 个 token 一次）。</p>
+        <div class="note ok" style="margin-bottom:0">和输入嵌入 E 的区别：E 只出现在输入残差流（x⁰）；每一层的 V 是“当前隐状态 × W_v”重新算出来的；VE 是另外查表加到 V 上——三者不是同一个东西。</div>
+      </div>
+
+      <div class="schematic">
+        <div class="frow">
+          <div class="stepbox">token id<br><b>4471</b><small>位置 t 的当前 token</small></div>
+          <span class="farrow">→</span>
+          <div class="stepbox violet">查表 g<br><b>第 4471 行</b><small>[49152, kv] 的表</small></div>
+          <span class="farrow">→</span>
+          <div class="stepbox violet">kv 维向量<br><b>640</b><small>3e17 档，kv = h</small></div>
+        </div>
+        <div class="frow">
+          <div class="stepbox green">reshape<br><b>5 头 × 128</b><small>按 KV 头切开</small></div>
+          <span class="farrow">→</span>
+          <div class="stepbox green">逐头乘门控 g<br><b>2σ(W·h[:12])</b><small>零初始化 → 初始 1</small></div>
+          <span class="farrow">→</span>
+          <div class="stepbox amber">按 λ₁ 加进 V<br><b>v ← λ₀·v + λ₁·g⊙VE</b></div>
+        </div>
+        <p class="small" style="margin-top:8px">表 g 由层决定：第 i 层与第 L−1−i 层共用一张表；3e17 一共 9 张，1e19 一共 20 张。</p>
+      </div>
+    </div>
+
+    
+    <h3 style="margin:34px 0 6px;font-size:19px">① 表结构：每个“层对”一张表</h3>
+    <div class="tdraw">
+      <h4>VE 表长什么样</h4>
+      <p class="tsmall">每张表 <b>49152 行 × kv 列</b>；行号就是 token id。G 张表按“层对”绑定。</p>
+      <div class="vewrap">
+        <div>
+          <div class="tsmall">表的数量（按层对）</div>
+          <div class="tstack">
+            <div class="tcard2"><b>表 0</b> · 层 0 &amp; 17</div>
+            <div class="tcard2"><b>表 1</b> · 层 1 &amp; 16</div>
+            <div class="tcard2">…</div>
+            <div class="tcard2"><b>表 G−1</b> · 中心层 / 最后一对</div>
+          </div>
+          <div class="tsmall" style="margin-top:8px">G = 9 / 13 / 15 / 20</div>
+        </div>
+        <div>
+          <div class="tsmall">当前 token id = <b>4471</b> → 直接取第 4471 行</div>
+          <div class="tgrid2">
+            <div class="trow2"><div class="idx2">行号</div><div class="cells2" style="display:flex;align-items:center;justify-content:space-between;padding:0 6px;font-size:9.5px;color:var(--dim)"><span>列 0</span><span>…</span><span>kv−1</span></div></div>
+            <div class="trow2"><div class="idx2">0</div><div class="cells2"></div></div>
+            <div class="trow2"><div class="idx2">1</div><div class="cells2"></div></div>
+            <div class="trow2"><div class="idx2">2</div><div class="cells2"></div></div>
+            <div class="trow2"><div class="idx2">⋮</div><div class="cells2"></div></div>
+            <div class="trow2 hit2"><div class="idx2">4471</div><div class="cells2"></div></div>
+            <div class="trow2"><div class="idx2">⋮</div><div class="cells2"></div></div>
+            <div class="trow2"><div class="idx2">49151</div><div class="cells2"></div></div>
+          </div>
+          <div class="tsmall" style="margin-top:8px">第 4471 行 = 一整条 <b>kv 维向量</b>：</div>
+          <div class="tstrip" style="height:34px"></div>
+          <div class="tsmall">kv = 640 / 768 / 1024 / 1152（四档）</div>
+          <div class="tsmall">高亮行 = 当前 token 要取的那一行；训练时只更新这种被取到的行。</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="twocol">
+      <div>
+        <div class="fbox">G 张表，每张 [49152, kv]
+kv = KV 头数 × head_dim = 头数 × 128 = h
+
+首尾对称：第 i 层与第 L−1−i 层共用一张
+3e17：18 层 → 9 张： (0,17),(1,16)…(8,9)
+1e19：39 层 → 20 张： (0,38)…(18,20)，第 19 层单独</div>
+        <p>为什么首尾共用：参数省一半，而前后层学到的“token 身份”信息可以互补；中间层与前后段等宽时也复用同一张表。</p>
+      </div>
+      <div class="tbl-wrap">
+        <table class="tbl">
+          <thead><tr><th>档位</th><th>h</th><th>kv</th><th>G（表数）</th><th>VE 总参数</th></tr></thead>
+          <tbody>
+            <tr><td>3e17</td><td>640</td><td>640</td><td>9</td><td>9 × 31.5M ≈ 283M</td></tr>
+            <tr><td>1e18</td><td>768</td><td>768</td><td>13</td><td>13 × 37.7M ≈ 491M</td></tr>
+            <tr><td>3e18</td><td>1024</td><td>1024</td><td>15</td><td>15 × 50.3M ≈ 755M</td></tr>
+            <tr><td>1e19</td><td>1152</td><td>1152</td><td>20</td><td>20 × 56.6M ≈ 1.13B</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <h3 style="margin:34px 0 6px;font-size:19px">② 怎么查：行号就是 token id</h3>
+    <div class="card">
+      <p>普通的嵌入查表，<b>不是哈希</b>：</p>
+      <div class="fbox">给定位置 t 的 token id x_t，以及它所在的层 i：
+  1. 找到层 i 绑定的表 g
+  2. 取表 g 的第 x_t 行
+  3. 得到一个 kv 维向量
+
+前后全分辨率层：每个 token 都查
+中段缩短层：只在块尾 token（第 16j 个）查一次，整块共用</div>
+      <p>查出来的向量是 <b>kv 维</b>（3e17 是 640，1e19 是 1152）；若要做逐 KV 头门控，就 reshape 成 <code>[KV 头数, 128]</code>。没有哈希、没有碰撞、没有指纹校验。</p>
+    </div>
+
+    <h3 style="margin:34px 0 6px;font-size:19px">③ 一个具体例子</h3>
+    <div class="card">
+      <p>3e17 档、token id = <b>4471</b>、位于第 <b>0</b> 层：</p>
+      <div class="fbox">第 0 层绑定表 0（与第 17 层共用）
+→ 取表 0 的第 4471 行：一个 640 维向量
+→ reshape 成 5 个 KV 头 × 128
+→ 每头乘门控 g（初始 1）
+→ 按 λ₁ 加进该 token 的 v</div>
+      <p>如果这个 token 同时被 VE 和 NVE 命中，v 里会同时加上两路查表向量（分别用 λ₁、λ₂/λ₃ 加权）。</p>
+    </div>
+
+    <h3 style="margin:34px 0 6px;font-size:19px">④ 怎么训练更新</h3>
+    <div class="grid g2">
+      <div class="card">
+        <h3>初始化</h3>
+        <p>表：<code>N(0, 0.02)</code> 随机初始化，和输入嵌入一样；λ：0.5；门控：零初始化（初始 g = 1）。</p>
+        <h3 style="margin-top:12px">反向传播</h3>
+        <p>梯度从注意力输出 → v → 反传到被查到的那些行；<b>本 batch 没出现过的 token 行不更新</b>（稀疏行更新）。因为首尾层共用表，两层的梯度会累加到同一批行。</p>
+      </div>
+      <div class="card">
+        <h3>优化器</h3>
+        <p>所有嵌入表（输入嵌入、VE、NVE、提示类别嵌入）归入<b>嵌入参数组</b>：AdamW + 单独学习率、无权重衰减；λ 和门控也一起训练。</p>
+        <h3 style="margin-top:12px">参数口径</h3>
+        <p>VE 表不计入 N / N_a，也不产生矩阵乘 FLOPs；但它是真实显存，查表的访存时间会计入 EvalTime。</p>
+      </div>
+    </div>
+
+    <h3 style="margin:34px 0 6px;font-size:19px">⑤ 怎么用：混合公式</h3>
+    <div class="fbox">v = λ0·(W_v·h) + λ1·(g ⊙ VE[x_t]) + λ2·(g ⊙ NVE₂) + λ3·(g ⊙ NVE₃)
+
+g = 2σ(W·h[:12])     # 每个 KV 头、每种来源一个门；初始 g = 1
+λ 每层 4 个可学习标量，初值 0.5
+
+混合后 reshape 成 [B, 头数, L, 128] → 因果注意力</div>
+    <div class="note warn" style="margin-bottom:0">VE 只负责“当前 token 身份”；局部上下文由下一节的 NVE 负责。两者是两份独立查询，分别用 λ₁ 与 λ₂/λ₃ 加权，不是拼在一起再算。</div>
+  </div>
+</section>
+
+<section class="section" id="nve">
+  <div class="wrap">
+    <div class="sec-head"><span class="sec-num">04</span><h2>NVE 表：按 2-gram / 3-gram 哈希查表，加进 V</h2></div>
+    <p class="sec-sub">
+      NVE = <b>N-gram Value Embeddings</b>。VE 只看当前 token；NVE 看“当前 token + 前 1/2 个 token”，把<b>局部上下文</b>也塞进 Value。
+      它是一张可训练的哈希表：同一个后缀 n-gram 永远映射到同一个桶，查出一段向量；冲突靠 4 组独立哈希分摊。
+    </p>
+
+    <div class="schematic">
+      <div class="frow">
+        <div class="stepbox"><b>x_{t-2} = 100</b><small>更早</small></div>
+        <div class="stepbox"><b>x_{t-1} = 30</b><small>前一个</small></div>
+        <div class="stepbox amber"><b>x_t = 2</b><small>当前</small></div>
+        <span class="farrow">→</span>
+        <div class="stepbox violet">2-gram 窗口：(30, 2)<br><small>4 组哈希</small></div>
+        <div class="stepbox violet">3-gram 窗口：(100, 30, 2)<br><small>4 组哈希</small></div>
+      </div>
+      <div class="frow">
+        <div class="stepbox violet">4 组桶号<br><b>229342 / 54760 / 1042640 / 358163</b></div>
+        <span class="farrow">→</span>
+        <div class="stepbox violet">4 行<br><b>229342 / 1103336 / 3139792 / 3503891</b><small>2-gram，行区间 0–4,194,303</small></div>
+        <span class="farrow">→</span>
+        <div class="stepbox green">各取 kv/4 维 → 拼成 <b>kv 维</b><small>NVE₂</small></div>
+      </div>
+      <div class="frow">
+        <div class="stepbox violet">3-gram 的 4 行<br><b>4277059 / 5892949 / 6884119 / 7689604</b><small>行区间 4,194,304–8,388,607</small></div>
+        <span class="farrow">→</span>
+        <div class="stepbox green">拼成 <b>kv 维</b> → <b>NVE₃</b></div>
+        <span class="farrow">→</span>
+        <div class="stepbox amber">按 λ₂ / λ₃ 加进 V<small>与 VE 同一位置</small></div>
+      </div>
+    </div>
+
+    
+    <h3 style="margin:34px 0 6px;font-size:19px">① 表结构：8 张逻辑子表拼成 1 张物理表</h3>
+    <div class="tdraw">
+      <h4>NVE 表长什么样</h4>
+      <p class="tsmall">一张物理表 <b>8,388,608 行 × kv/4 列</b>，按“阶 × 组”切成 8 段，每段 1,048,576 行；每行是 kv/4 个数。</p>
+      <div class="tgrid2">
+        <div class="seg2"><div class="lab"><b>2-gram 组 0</b><br>行 0 – 1,048,575</div><div class="bar hit"><span class="tag">选中行 229,342</span></div></div>
+        <div class="seg2"><div class="lab"><b>2-gram 组 1</b><br>行 1,048,576 – 2,097,151</div><div class="bar"></div></div>
+        <div class="seg2"><div class="lab"><b>2-gram 组 2</b><br>行 2,097,152 – 3,145,727</div><div class="bar"></div></div>
+        <div class="seg2"><div class="lab"><b>2-gram 组 3</b><br>行 3,145,728 – 4,194,303</div><div class="bar"></div></div>
+        <div class="seg2"><div class="lab"><b>3-gram 组 0</b><br>行 4,194,304 – 5,242,879</div><div class="bar hit"><span class="tag">选中行 4,277,059</span></div></div>
+        <div class="seg2"><div class="lab"><b>3-gram 组 1</b><br>行 5,242,880 – 6,291,455</div><div class="bar"></div></div>
+        <div class="seg2"><div class="lab"><b>3-gram 组 2</b><br>行 6,291,456 – 7,340,031</div><div class="bar"></div></div>
+        <div class="seg2"><div class="lab"><b>3-gram 组 3</b><br>行 7,340,032 – 8,388,607</div><div class="bar"></div></div>
+      </div>
+      <div class="tsmall" style="margin-top:10px">选中的一行 = <b>kv/4 个数</b>（3e17: 160，1e19: 288）：</div>
+      <div class="tstrip" style="height:30px"></div>
+      <div class="tsmall">2-gram 的 4 组各取一行 → 拼成 <b>kv 维的 NVE₂</b>：</div>
+      <div class="frow" style="gap:6px;margin:4px 0">
+        <span class="pill2">组0 行229,342</span><span class="pill2">组1 行1,103,336</span><span class="pill2">组2 行3,139,792</span><span class="pill2">组3 行3,503,891</span>
+      </div>
+      <div class="tstrip" style="height:22px"></div>
+      <div class="tsmall">3-gram 的 4 组各取一行 → 拼成 <b>kv 维的 NVE₃</b>：</div>
+      <div class="frow" style="gap:6px;margin:4px 0">
+        <span class="pill2">组0 行4,277,059</span><span class="pill2">组1 行5,892,949</span><span class="pill2">组2 行6,884,119</span><span class="pill2">组3 行7,689,604</span>
+      </div>
+      <div class="tstrip" style="height:22px"></div>
+    </div>
+
+    <div class="twocol">
+      <div class="tbl-wrap">
+        <table class="tbl">
+          <thead><tr><th>阶</th><th>组</th><th>每组桶数</th><th>行区间</th><th>输出通道</th></tr></thead>
+          <tbody>
+            <tr><td>2-gram</td><td>4</td><td>2²⁰ = 1,048,576</td><td>0 … 4,194,303</td><td>4 × kv/4 → kv</td></tr>
+            <tr><td>3-gram</td><td>4</td><td>2²⁰ = 1,048,576</td><td>4,194,304 … 8,388,607</td><td>4 × kv/4 → kv</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="card" style="margin:0">
+        <div class="kv">
+          <div class="row"><span>总行数</span><span>8 × 2²⁰ = 8,388,608</span></div>
+          <div class="row"><span>每行宽度</span><span>kv/4（3e17 160，1e19 288）</span></div>
+          <div class="row"><span>总参数</span><span>1.34 B（3e17）~ 2.42 B（1e19）</span></div>
+          <div class="row"><span>BF16 大小</span><span>约 2.5 ~ 4.5 GiB</span></div>
+        </div>
+        <p class="small" style="margin-top:10px">四档行数完全一样，只是行宽随 h 变。2-gram、3-gram 各占一半。</p>
+      </div>
+    </div>
+
+    <h3 style="margin:34px 0 6px;font-size:19px">② 怎么查：2-gram 算例（x_{t-1}=30, x_t=2）</h3>
+    <p class="sec-sub" style="margin-bottom:10px">
+      <code>⊕</code> 是按位异或（相同得 0、不同得 1，无进位）；<code>&gt;&gt;</code> 是右移；<code>mod 2²⁰</code> 是取低 20 位。
+      每组的乘数由配置里的 seed 生成，<b>不是训练参数</b>。
+    </p>
+    <div class="twocol">
+      <div>
+        <div class="fbox">第 0 组、2-gram：
+
+t0 = 2  × 1,307,686,367 = 2,615,372,734
+t1 = 30 × 2,062,295,059 = 61,868,851,770
+key = t0 ⊕ t1            = 64,362,162,564
+
+key >> 21                = 30,690
+k1 = key ⊕ (key>>21)     = 64,362,176,102
+k2 = k1 × 0x6F4B         = 1,833,742,759,322,082
+k3 = k2 ⊕ (k2>>29)       = 1,833,742,762,213,342
+
+桶号 = k3 mod 2²⁰        = 229,342
+行号 = 0 × 1,048,576 + 229,342 = 229,342</div>
+        <p class="small">“混合”两步（右移 + 异或 + 乘法）是为了把高位折进低位，避免只看低 20 位时容易撞桶。</p>
+      </div>
+      <div class="tbl-wrap">
+        <table class="tbl">
+          <thead><tr><th>组</th><th>乘数 m₀ / m₁</th><th>key</th><th>桶号</th><th>行号</th><th>通道</th></tr></thead>
+          <tbody>
+            <tr><td>0</td><td class="mono">1,307,686,367 / 2,062,295,059</td><td class="mono">64,362,162,564</td><td class="mono">229,342</td><td class="mono">229,342</td><td class="mono">0–159</td></tr>
+            <tr><td>1</td><td class="mono">1,747,513,471 / 1,021,656,195</td><td class="mono">34,134,095,780</td><td class="mono">54,760</td><td class="mono">1,103,336</td><td class="mono">160–319</td></tr>
+            <tr><td>2</td><td class="mono">1,382,986,355 / 1,342,098,769</td><td class="mono">42,865,879,960</td><td class="mono">1,042,640</td><td class="mono">3,139,792</td><td class="mono">320–479</td></tr>
+            <tr><td>3</td><td class="mono">175,477,837 / 758,267,427</td><td class="mono">23,069,220,992</td><td class="mono">358,163</td><td class="mono">3,503,891</td><td class="mono">480–639</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <p>4 组各取一行（3e17 每行 160 个数），拼成 <b>640 维的 NVE₂</b>。行号 = 组偏移 + 桶号，组偏移分别是 0 / 1M / 2M / 3M。</p>
+
+    <h3 style="margin:34px 0 6px;font-size:19px">③ 3-gram 算例（x_{t-2}=100, x_{t-1}=30, x_t=2）</h3>
+    <div class="twocol">
+      <div>
+        <p>3-gram 用 3 个乘数异或，表偏移从第 4 段开始（前 4 段被 2-gram 占用）：</p>
+        <div class="fbox">以第 0 组为例（三个乘数）：
+m0=1,134,372,861  m1=1,100,664,025  m2=1,952,079,871
+
+key = 2·m0 ⊕ 30·m1 ⊕ 100·m2 = 181,534,929,160
+→ 混合 → 桶号 82,755
+→ 行号 = 4 × 1,048,576 + 82,755 = 4,277,059</div>
+      </div>
+      <div class="tbl-wrap">
+        <table class="tbl">
+          <thead><tr><th>3-gram 组</th><th>key</th><th>桶号</th><th>行号</th></tr></thead>
+          <tbody>
+            <tr><td>0</td><td class="mono">181,534,929,160</td><td class="mono">82,755</td><td class="mono">4,277,059</td></tr>
+            <tr><td>1</td><td class="mono">62,329,206,736</td><td class="mono">650,069</td><td class="mono">5,892,949</td></tr>
+            <tr><td>2</td><td class="mono">211,468,429,588</td><td class="mono">592,663</td><td class="mono">6,884,119</td></tr>
+            <tr><td>3</td><td class="mono">206,034,864,780</td><td class="mono">349,572</td><td class="mono">7,689,604</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <p>4 行拼成 <b>640 维的 NVE₃</b>，与 NVE₂ 独立，分别用 λ₂、λ₃ 加权。</p>
+
+    <h3 style="margin:34px 0 6px;font-size:19px">④ 怎么训练更新</h3>
+    <div class="grid g2">
+      <div class="card">
+        <h3>初始化与反向</h3>
+        <p><code>N(0, 0.02)</code> 随机初始化；梯度只回传到本 batch 命中的那些行（未命中行不变）。全模型所有 VE 层共用这一套表，梯度从各层累加到相同行上。</p>
+      </div>
+      <div class="card">
+        <h3>优化器与口径</h3>
+        <p>归入嵌入参数组（AdamW + 单独学习率、无权重衰减）；可以给 NVE 单独学习率，但这次没启用。表不计 N / N_a、不计 FLOPs，但占显存、查表时间计入 EvalTime。</p>
+      </div>
+    </div>
+
+    <h3 style="margin:34px 0 6px;font-size:19px">⑤ 怎么用 + 撞桶</h3>
+    <div class="fbox">v = λ0·(W_v·h) + λ1·(g ⊙ VE[x_t])
+  + λ2·(g ⊙ NVE₂[hash(x_{t-1}, x_t)])
+  + λ3·(g ⊙ NVE₃[hash(x_{t-2}, x_{t-1}, x_t)])
+
+g = 2σ(W·h[:12])，每个 KV 头、每种来源一个门；初始 g = 1</div>
+    <div class="note warn" style="margin-bottom:0">
+      <b>撞桶：</b>不同的 n-gram 完全可能落到同一行（哈希没有指纹校验）。它们会读到同一段向量，训练时梯度也相加。
+      4 组独立哈希的作用是把一次碰撞的影响限制在 kv/4 个通道上，而不是整段 kv；4 组同时撞的概率更低。
+    </div>
+  </div>
+</section>
+
+<section class="section" id="hint">
+  <div class="wrap">
+    <div class="sec-head"><span class="sec-num">05</span><h2>hint 表：只读的 n-gram 统计，用来给输入 / 输出 / logit 加提示</h2></div>
+    <p class="sec-sub">
+      hint 表是这个项目里最特殊的表：它<b>不是可训练参数</b>，而是官方训练语料的统计结果——记录“某个 n-gram 后面最常出现什么 token、出现多少次、有多纯”。
+      模型不训练它，但<b>训练和推理都会查它</b>；它自己不更新，却会影响其他所有参数怎么更新。
+    </p>
+
+    <div class="twocol">
+      <div class="schematic">
+        <div class="vflow">
+          <div class="stepbox">token ids [B, 3072]</div>
+          <div class="downarrow">↓</div>
+          <div class="stepbox">E[x] 输入嵌入</div>
+          <div class="downarrow">↓</div>
+          <div class="stepbox pink"><b>① 输入嵌入：h⁰ += s_in · H</b><small>H = 15 列提示向量之和</small></div>
+          <div class="downarrow">↓</div>
+          <div class="stepbox violet">L 层 Transformer<small>每层的 V 里加 VE / NVE（不是 hint）</small></div>
+          <div class="downarrow">↓</div>
+          <div class="stepbox">最终 RMSNorm</div>
+          <div class="downarrow">↓</div>
+          <div class="stepbox pink"><b>② 输出前：h += s_out · H</b><small>整个层栈结束、只加一次</small></div>
+          <div class="downarrow">↓</div>
+          <div class="stepbox amber">输出层 → logits [B, 3072, 49152]</div>
+          <div class="downarrow">↓</div>
+          <div class="stepbox pink"><b>③ logit：logits[tok_c] += score[cls]</b><small>最多 15 个候选列</small></div>
+        </div>
+      </div>
+
+      <div>
+        <div class="card" style="margin:0">
+          <h3>表里存了什么</h3>
+          <p>对 6 个阶（2/3/4/6/10/20），统计每个 n-gram 的后继 token 频次；每个阶按次数保留前 4/4/3/2/1/1 名后继，共 <b>15 列</b>。</p>
+          <div class="fbox">每个槽 5 字节：
+  16 位指纹（防哈希冲突误判）
+  16 位后继 token id
+  8 位类别（次数桶 × 纯度桶）
+
+每列 42 类；15 列 × 42 + 1（空类）= 631 类
+6 个阶、约 112 GB、统计自 54.88 B token</div>
+          <p class="small">它不存向量；向量是查表后用“输入嵌入 E + 类别嵌入”拼出来的。</p>
+        </div>
+      </div>
+    </div>
+
+    <h3 style="margin:34px 0 6px;font-size:19px">① 15 列从哪来</h3>
+    <div class="tbl-wrap">
+      <table class="tbl">
+        <thead><tr><th>阶</th><th>2-gram</th><th>3-gram</th><th>4-gram</th><th>6-gram</th><th>10-gram</th><th>20-gram</th><th>合计</th></tr></thead>
+        <tbody>
+          <tr><td>保留前几名后继</td><td>4</td><td>4</td><td>3</td><td>2</td><td>1</td><td>1</td><td><b>15 列</b></td></tr>
+          <tr><td>每列类别数</td><td>42</td><td>42</td><td>42</td><td>42</td><td>42</td><td>42</td><td><b>631 类</b>（含空类）</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>为什么阶越高保留越少：高阶 n-gram 更稀疏、后继更集中（通常只有一个固定后继），多留只会塞噪声、浪费槽位。</p>
+
+    <h3 style="margin:34px 0 6px;font-size:19px">② 怎么查：哈希 + 指纹校验</h3>
+    <div class="card">
+      <div class="fbox">对每个阶 n（2/3/4/6/10/20）：
+hash = mix( x_t·m0 ⊕ x_{t-1}·m1 ⊕ … ⊕ x_{t-n+1}·m_{n-1} ⊕ (n<<42) )
+                      # m0 乘当前 token，m1 乘前一个 …（与建表脚本一致）
+
+slot = hash & (2^bits − 1)          # 取低位作为槽号
+fp   = (hash >> bits) & 0xFFFF      # 取高位作为 16 位指纹
+
+命中条件：表里的指纹 == fp  且  后继 token 槽非空
+命中后得到：(后继 token, 类别)
+
+15 列分别查 → 最多 15 个 (token, 类别)；没有命中的列贡献 0</div>
+      <p>和 NVE 的区别：hint 表有 <b>16 位指纹校验</b>，能拒绝大部分哈希冲突；NVE 没有指纹，撞了就用同一行。hint 的阶到 20，NVE 只到 3。</p>
+      <p class="small">类别 = 7 个次数桶 × 6 个纯度桶 = 42 类；同一列的不同 n-gram 共享这个类别的信任度。</p>
+    </div>
+
+    <h3 style="margin:34px 0 6px;font-size:19px">③ 完整算例：x_{t-1}=30, x_t=2（2 阶）</h3>
+    <div class="tdraw">
+      <h4>(30,2) 的手算过程</h4>
+      <p class="tsmall">以 1e19 的 2 阶表为例（2²⁸ 个槽，bits=28）；<code>hint_seed = 0</code>，乘数固定，下面每一步都可以复现。</p>
+      <div class="fbox">第 1 步：取窗口
+  x_{t-1} = 30，x_t = 2，阶 n = 2
+
+第 2 步：乘数（seed = 0，固定不变）
+  m0 = 1,692,323,285      # 乘当前 token x_t
+  m1 = 1,821,802,719      # 乘前一个 token x_{t-1}
+
+第 3 步：乘 + 异或
+  t0 = 2  × m0 = 3,384,646,570
+  t1 = 30 × m1 = 54,654,081,570
+  key0 = t0 ⊕ t1 = 53,420,654,984
+
+第 4 步：混入阶号 2 << 42
+  key = key0 ⊕ (2 << 42)
+      = 53,420,654,984 ⊕ 8,796,093,022,208
+      = 8,849,513,677,192
+
+第 5 步：mix
+  k1 = key ⊕ (key >> 21)      = 8,849,517,896,200
+  k2 = k1 × 0x6F4B mod 2^64   = 252,131,614,380,634,200
+  k3 = k2 ⊕ (k2 >> 29)        = 252,131,614,454,428,328
+                              = 0x037fc05e1433b2a8
+
+第 6 步：拆 slot / fp（bits = 28）
+  slot = k3 & (2^28 − 1)      = 70,496,936
+  fp   = (k3 >> 28) & 0xFFFF  = 0x05E1 = 1505</div>
+      <div class="frow">
+        <div class="stepbox">槽号<br><b>70,496,936</b><small>2 阶第 1 名表</small></div>
+        <span class="farrow">→</span>
+        <div class="stepbox violet">读出槽里的 fp<br><b>和 0x05E1 比较</b></div>
+        <span class="farrow">→</span>
+        <div class="stepbox green">相等且 token 非空<br><b>命中：返回 (token, class)</b></div>
+        <span class="farrow">→</span>
+        <div class="stepbox amber">否则<br><b>这一列贡献 0</b></div>
+      </div>
+      <p class="small">说明：源码快照没有随附 112 GB 的表文件，所以这里只能算出“落在哪个槽、该比对哪个指纹”；该槽实际存的 token / 类别由语料统计决定。</p>
+    </div>
+
+    <h3 style="margin:34px 0 6px;font-size:19px">④ 完整算例：x_{t-2}=100, x_{t-1}=30, x_t=2（3 阶）</h3>
+    <div class="tdraw">
+      <h4>(100,30,2) 的手算过程</h4>
+      <p class="tsmall">3 阶表有 2³⁰ 个槽（bits=30），用 3 个乘数：m0 乘 x_t，m1 乘 x_{t-1}，m2 乘 x_{t-2}。</p>
+      <div class="fbox">m0 = 1,692,323,285
+m1 = 1,821,802,719
+m2 = 995,982,333
+
+t0 = 2   × m0 = 3,384,646,570
+t1 = 30  × m1 = 54,654,081,570
+t2 = 100 × m2 = 99,598,233,300
+key0 = t0 ⊕ t1 ⊕ t2 = 117,048,012,636
+
+key = key0 ⊕ (3 << 42) = 13,311,187,545,948
+
+k1 = key ⊕ (key >> 21)      = 13,311,193,789,784
+k2 = k1 × 0x6F4B mod 2^64   = 379,249,222,264,735,944
+k3 = k2 ⊕ (k2 >> 29)        = 379,249,222,902,620,556
+                            = 0x05435d28ac74218c
+
+slot = k3 & (2^30 − 1)      = 745,808,268
+fp   = (k3 >> 30) & 0xFFFF  = 0x74A2 = 29,858</div>
+      <p>两张表各查各的：2 阶用槽 70,496,936、指纹 0x05E1；3 阶用槽 745,808,268、指纹 0x74A2。15 列都命中时，最多拿到 15 个候选。</p>
+    </div>
+
+    <h3 style="margin:34px 0 6px;font-size:19px">④ 一次查表 → 三处使用</h3>
+    <div class="twocol">
+      <div>
+        <p><b>第一步：拼提示向量 H</b></p>
+        <div class="fbox">H = Σ_{命中的列 c} [ (1 + amount[cls_c]) · E[tok_c] + feat[cls_c] ]
+
+amount：该类别的“信任度缩放”（可学习，初始 0）
+ feat ：该类别的偏置向量（可学习，初始 0）
+ E    ：输入嵌入表（与普通 token 共享同一张表）</div>
+        <p>同一个 token 被多列命中时，它的 <code>E[tok]</code> 会被加多次（每列用各自的类别参数）。</p>
+      </div>
+      <div>
+        <p><b>第二步：三处注入</b></p>
+        <div class="fbox">① 输入：    h⁰ ← h⁰ + s_in  · H
+② 输出前：  h  ← h  + s_out · H
+③ logit：   logits[t, tok_c] += score[cls_c]
+
+s_in / s_out：两个可学习标量，初始 0
+score[cls]  ：每个类别一个可学习标量，初始 0</div>
+        <p>所以训练第 0 步，整个 hint 分支贡献恒为 0，模型等价于完全不用提示。</p>
+      </div>
+    </div>
+
+    <h3 style="margin:34px 0 6px;font-size:19px">⑤ 一个例子：15 列里命中 6 列</h3>
+    <div class="tbl-wrap">
+      <table class="tbl">
+        <thead><tr><th>列</th><th>来源</th><th>命中 token</th><th>类别</th><th>贡献向量</th><th>logit 加分</th></tr></thead>
+        <tbody>
+          <tr><td>0</td><td>2-gram 第 1 名</td><td>123</td><td>5</td><td><code>(1+a5)·E[123]+f5</code></td><td>123 列 +score5</td></tr>
+          <tr><td>1</td><td>2-gram 第 2 名</td><td>456</td><td>3</td><td><code>(1+a3)·E[456]+f3</code></td><td>456 列 +score3</td></tr>
+          <tr><td>4</td><td>3-gram 第 1 名</td><td>789</td><td>40</td><td><code>(1+a40)·E[789]+f40</code></td><td>789 列 +score40</td></tr>
+          <tr><td>8</td><td>4-gram 第 1 名</td><td>123</td><td>12</td><td><code>(1+a12)·E[123]+f12</code></td><td>123 列 +score12</td></tr>
+          <tr><td>11</td><td>6-gram 第 1 名</td><td>42</td><td>20</td><td><code>(1+a20)·E[42]+f20</code></td><td>42 列 +score20</td></tr>
+          <tr><td>14</td><td>20-gram 第 1 名</td><td>9000</td><td>41</td><td><code>(1+a41)·E[9000]+f41</code></td><td>9000 列 +score41</td></tr>
+          <tr><td>其余 9 列</td><td>未命中</td><td>—</td><td>0</td><td>0</td><td>0</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>把这些列全部相加得到 H；logit 端 123 被两列命中，所以它的加分是 <code>score5 + score12</code>，其余候选各加一次。没有“15 选 1”，而是<b>全部命中项相加</b>。</p>
+
+    <h3 style="margin:34px 0 6px;font-size:19px">⑥ 它不更新，为什么还能影响训练</h3>
+    <div class="grid g2">
+      <div class="card">
+        <h3>梯度怎么走</h3>
+        <p>表没有参数、没有梯度，但查到的 <code>(token, 类别)</code> 参与前向，所以梯度会流向：</p>
+        <ul style="margin:8px 0 0;padding-left:20px;color:var(--muted);font-size:14px">
+          <li>被提示 token 的输入嵌入 E 行（额外梯度）</li>
+          <li>提示类别嵌入 amount / feat / score</li>
+          <li>输入/输出两个强度标量 s_in / s_out</li>
+          <li>以及整条主干的所有参数</li>
+        </ul>
+        <p style="margin-top:8px">它相当于一个<b>固定的先验特征</b>，模型学的是“信不信、信多少”。</p>
+      </div>
+      <div class="card">
+        <h3>训练用哪份表</h3>
+        <p>训练时用“只用 75% 语料统计、且与训练实际使用的 25% 语料互不重叠”的表——否则模型会过度信任提示，到评测就失效。</p>
+        <p>提交 / 推理时换成“用 100% 训练语料统计”的同结构表；两份表槽位、字段、查询方式完全相同，只是统计来源不同。</p>
+        <p class="small">训练器会核对两边的划分指纹，防止混用。</p>
+      </div>
+    </div>
+
+    <h3 style="margin:34px 0 6px;font-size:19px">⑦ 干什么用：为什么值得占 112 GB</h3>
+    <div class="card">
+      <p>它把“语料级的 n-gram 继续概率”变成<b>零 FLOPs 的额外信息源</b>，补的是模型参数里学不到的稀有/固定搭配：</p>
+      <div class="grid g3" style="margin-top:12px">
+        <div class="note" style="margin:0"><b>输入注入：</b>让提示从第 1 层就进入残差流，影响所有层的表示。</div>
+        <div class="note ok" style="margin:0"><b>输出前注入：</b>在最终表示上再提醒一次，离预测更近。</div>
+        <div class="note warn" style="margin:0"><b>logit 加分：</b>直接改候选 token 的分数，零矩阵乘、作用最直接。</div>
+      </div>
+      <p class="small" style="margin-top:12px">代价：表约 112 GB、查表访存时间计入 EvalTime；但它的参数不计入 N / N_a、不产生矩阵乘 FLOPs。</p>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <div>nvb20k 深度解剖 · 模型架构 / Token 压缩 / VE / NVE / hint</div>
+    <div>Qwen3 式骨架 · k=16 压缩 · 四档 640~1152 · head_dim 128</div>
+  </div>
+</footer>
+
+<dialog id="tableDialog"><div class="modal" id="tableModal"></div></dialog>
+<script src="app.js"></script>
+</body>
+</html>
