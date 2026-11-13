@@ -307,6 +307,92 @@
       <span><i style="background:rgba(169,139,255,.9)"></i>N-gram Value 表</span>
       <span><i style="background:rgba(255,122,198,.9)"></i>hint 提示表</span>
     </div>
+    <h3 style="margin:36px 0 6px;font-size:20px">单层结构</h3>
+    <p class="sec-sub" style="margin-bottom:12px">一层 = 预归一化 + 注意力（QK-Norm / RoPE / 输出门）+ 预归一化 + MLP；注意力的 V 里混入 VE / NVE。仅作结构示意，不可点击。</p>
+    <div class="diagram-shell" style="margin-bottom:18px">
+<svg viewBox="0 0 1040 300" role="img" aria-label="单层内部结构">
+        <defs>
+          <marker id="ar2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="rgba(150,175,255,.7)"></path>
+          </marker>
+        </defs>
+        <text x="20" y="28" class="ts">一层 = 预归一化 + 注意力（含查表混合）+ 预归一化 + MLP（ReLU²）</text>
+
+        <g class="node" data-node="layer_full">
+          <rect class="box" x="20" y="120" width="90" height="56" rx="12" fill="rgba(63,227,255,.08)" stroke="rgba(63,227,255,.45)"></rect>
+          <text x="42" y="152" class="t">x<tspan dy="4" font-size="8">t</tspan></text>
+          <title>输入隐状态</title>
+        </g>
+        <path class="edge" d="M110,148 L130,148" marker-end="url(#ar2)"></path>
+        <g class="node" data-node="layer_full">
+          <rect class="box" x="132" y="120" width="106" height="56" rx="12" fill="rgba(140,170,255,.10)" stroke="rgba(140,170,255,.45)"></rect>
+          <text x="146" y="152" class="t">RMSNorm</text>
+          <title>预归一化</title>
+        </g>
+        <path class="edge" d="M238,148 L258,148" marker-end="url(#ar2)"></path>
+
+        <g class="node" data-node="attn">
+          <rect class="box" x="260" y="96" width="262" height="104" rx="14" fill="rgba(63,227,255,.08)" stroke="rgba(63,227,255,.5)"></rect>
+          <text x="274" y="120" class="t">注意力（因果）</text>
+          <text x="274" y="140" class="ts">q/k/v 投影；QK-Norm(128)；RoPE θ=10000</text>
+          <text x="274" y="158" class="ts">v ← λ₀·v + λ₁·VE[x] + λ₂·NVE₂ + λ₃·NVE₃</text>
+          <text x="274" y="176" class="ts">o = 2σ(W_g·x) ⊙ 注意力(q,k,v) ；输出 W_o·o</text>
+          <text x="274" y="194" class="ts" fill="#ffbf6b">全长层按头门控 · 中段按通道门控</text>
+          <title>注意力细节</title>
+        </g>
+        <path class="edge" d="M522,148 L542,148" marker-end="url(#ar2)"></path>
+
+        <g class="node" data-node="layer_full">
+          <rect class="box" x="544" y="120" width="42" height="56" rx="12" fill="rgba(76,230,168,.10)" stroke="rgba(76,230,168,.5)"></rect>
+          <text x="562" y="154" class="t">＋</text>
+          <title>残差相加</title>
+        </g>
+        <path class="edge" d="M586,148 L606,148" marker-end="url(#ar2)"></path>
+        <g class="node" data-node="layer_full">
+          <rect class="box" x="608" y="120" width="106" height="56" rx="12" fill="rgba(140,170,255,.10)" stroke="rgba(140,170,255,.45)"></rect>
+          <text x="622" y="152" class="t">RMSNorm</text>
+          <title>预归一化</title>
+        </g>
+        <path class="edge" d="M714,148 L734,148" marker-end="url(#ar2)"></path>
+        <g class="node" data-node="layer">
+          <rect class="box" x="736" y="96" width="196" height="104" rx="14" fill="rgba(255,191,107,.09)" stroke="rgba(255,191,107,.55)"></rect>
+          <text x="750" y="120" class="t">MLP（两矩阵）</text>
+          <text x="750" y="140" class="ts">u = W_up · x  ： h → <tspan data-tier="inter">3072</tspan></text>
+          <text x="750" y="158" class="ts">a = ReLU(u)²   （不是 SwiGLU）</text>
+          <text x="750" y="176" class="ts">y = W_down · a ： <tspan data-tier="inter">3072</tspan> → h</text>
+          <text x="750" y="194" class="ts" fill="#ffbf6b">参数/FLOPs 省 1/3</text>
+          <title>MLP</title>
+        </g>
+        <path class="edge" d="M932,148 L952,148" marker-end="url(#ar2)"></path>
+        <g class="node" data-node="layer_full">
+          <rect class="box" x="954" y="120" width="42" height="56" rx="12" fill="rgba(76,230,168,.10)" stroke="rgba(76,230,168,.5)"></rect>
+          <text x="972" y="154" class="t">＋</text>
+          <title>残差相加</title>
+        </g>
+        <path class="edge" d="M996,148 L1020,148" marker-end="url(#ar2)"></path>
+        <text x="1000" y="118" class="ts">下一层</text>
+
+        <!-- 残差 -->
+        <path class="edge dash" d="M65,120 L65,78 L565,78 L565,118" marker-end="url(#ar2)"></path>
+        <path class="edge dash" d="M565,178 L565,236 L975,236 L975,178" marker-end="url(#ar2)"></path>
+        <text x="300" y="70" class="ts">残差（identity）</text>
+
+        <!-- 查表来源 -->
+        <g class="node" data-node="ve">
+          <rect class="box" x="260" y="238" width="150" height="40" rx="10" fill="rgba(76,230,168,.08)" stroke="rgba(76,230,168,.45)"></rect>
+          <text x="272" y="263" class="ts" fill="#8ff0cd">VE[x]  按 token 查</text>
+          <title>Value Embedding</title>
+        </g>
+        <g class="node" data-node="nve">
+          <rect class="box" x="420" y="238" width="180" height="40" rx="10" fill="rgba(169,139,255,.09)" stroke="rgba(169,139,255,.45)"></rect>
+          <text x="432" y="263" class="ts" fill="#c9b6ff">NVE  按 2/3-gram 哈希查</text>
+          <title>N-gram Value Embedding</title>
+        </g>
+        <path class="edge dash" d="M335,238 L335,204" stroke="rgba(76,230,168,.6)" marker-end="url(#ar2)"></path>
+        <path class="edge dash" d="M510,238 L510,204" stroke="rgba(169,139,255,.6)" marker-end="url(#ar2)"></path>
+      </svg>
+    </div>
+
     <h3 style="margin:36px 0 6px;font-size:20px">四档尺寸</h3>
     <div class="tbl-wrap">
       <table class="tbl" id="tierTable">
