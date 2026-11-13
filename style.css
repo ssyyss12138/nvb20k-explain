@@ -351,3 +351,7 @@ footer .wrap{display:flex;gap:18px;flex-wrap:wrap;justify-content:space-between}
 .seg2 .bar.hit{background-color:rgba(255,191,107,.25);border-color:rgba(255,191,107,.8)}
 .seg2 .bar .tag{position:absolute;right:6px;top:2px;font-family:var(--mono);font-size:9.5px;color:#ffd79a}
 .concats{display:grid;grid-template-columns:1fr;gap:6px;margin-top:8px}
+
+/* 架构图只作展示：不再可点击 */
+svg .node{cursor:default}
+svg .node:hover .box{filter:none}
