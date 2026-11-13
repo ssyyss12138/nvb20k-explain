@@ -182,24 +182,6 @@ const MODULES = [
     flops: "展开投影每 16 token 一次 2·h·16h；门控每 token 约 4·h·64。"
   },
   {
-    key: "hint_tab", name: "n-gram 提示表（只读）", badge: "只读统计表",
-    tags: [["只读表", "hint"], ["读", "hint"]],
-    formula: "每个阶 n：slots = 2^{slots_log2[n]} 个槽\n每槽 5 字节：fp16 指纹(2B) + token(uint16,2B) + 类别(uint8,1B)\n第 2 名起另有小数组：指纹 + 类别 + 后继\nhash = mix( ⊕_j x[t-j]·m_j ⊕ (n<<42) )\nslot = hash & (2^bits-1)；fp = (hash>>bits)&0xFFFF\n命中条件：指纹相等 且 后继槽非空",
-    what: "这是整个项目最“不像大模型”的部分：6 张只读的哈希表，存的是官方训练语料里“某个 n-gram 后面最常出现哪些 token、出现多少次、有多纯”。模型不训练它，只在训练时做了 25% / 75% 的划分来避免泄漏；提交的表用 100% 训练语料统计。",
-    how: [
-      "<b>用在哪（三处，一次查表共享）：</b>① 输入嵌入上：h⁰ += s_in·hint_rows；② 整个层栈结束、最终归一化之后、输出层之前：h += s_out·hint_rows（只加一次，不是每层注意力的输出前）；③ 输出层算出 logits 之后，给候选 token 的 logit 列加类别分数。",
-      "<b>两处‘向量’和一处‘logit’的区别：</b>输入/输出前是在 h 维隐空间里加向量，会影响整条表示和全部 logit；logit 加分是在 49152 维词表空间里只改那 15 个候选列，两者互补。",
-      "<b>只读，但会影响训练：</b>表本身没有梯度、不更新；但查到的 (token, 类别) 参与前向，梯度会流向被提示 token 的 E 行、提示类别嵌入（amount/feat/logit）、两个强度标量 s_in/s_out，以及整个模型——相当于一个固定的“先验特征”。",
-      "<b>6 个阶：</b>2/3/4/6/10/20；对每个 n-gram 统计它后面出现过的 token，按次数排序，每个阶保留前 4/4/3/2/1/1 名后继——共 15 列（阶越高，保留的后继越少）。",
-      "<b>槽数：</b>2/3/4/6/10/20 阶分别是 2^28 / 2^30 / 2^32 / 2^32 / 2^32 / 2^31；多后继的小数组用更少的槽。",
-      "<b>分类：</b>每列按“出现次数桶（7 档）× 纯度桶（6 档）”= 42 类；共 15×42+1=631 个类别（0 = 没有提示）。",
-      "<b>只留高频：</b>每个槽只保留总次数最多的那个 n-gram；表满时低次数的 n-gram 自然被挤掉，但训练数据本身没有被过滤。",
-      "<b>训练和推理都查它：</b>训练时用与训练 token 互斥的 75% 语料统计版本，推理时用 100% 语料统计版本。",
-      "<b>为什么 112GB：</b>2^32 个槽 × 5 字节 × 多个阶 / 多后继，纯统计换显存。"
-    ],
-    flops: "整数哈希 + 查表，0 矩阵乘、0 FLOPs（官方只算矩阵乘）。"
-  },
-  {
     key: "hint_cls", name: "提示类别嵌入（可学习）", badge: "训练表",
     tags: [["训练", "hint"]],
     formula: "trust[cls]  = amount[cls]        (初始 0)\nfeat[cls]   = 类别向量            (h 维)\nbonus[cls]  = logit_score[cls]    (初始 0)\n向量 = (1 + trust)·E[tok] + feat\nlogit 加分 = bonus[cls]",
@@ -264,7 +246,7 @@ const MODULES = [
 const NODE_TO_MODULE = {
   input: "input", embed: "embed", hint_in: "hint_in",
   layer_full: "layer", middle: "middle", shorten: "shorten", expand: "expand",
-  ve: "ve", nve: "nve", hint_tab: "hint_tab", hint_cls: "hint_cls",
+  ve: "ve", nve: "nve", hint_tab: "#hint", hint_cls: "hint_cls",
   norm_out: "norm_out", lm_head: "lm_head", hint_logit: "hint_logit", loss: "loss"
 };
 
@@ -356,6 +338,10 @@ function init() {
     n.addEventListener("click", () => {
       const mod = NODE_TO_MODULE[n.getAttribute("data-node")];
       if (!mod) return;
+      if (mod.startsWith("#")) {
+        document.querySelector(mod)?.scrollIntoView({ behavior: "smooth" });
+        return;
+      }
       renderModule(mod);
       document.getElementById("modPanel").scrollIntoView({ behavior: "smooth", block: "center" });
     });
