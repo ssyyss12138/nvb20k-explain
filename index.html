@@ -1086,7 +1086,7 @@ fp   = (hash >> bits) & 0xFFFF      # 取高位作为 16 位指纹
       <p class="small">说明：源码快照没有随附 112 GB 的表文件，所以这里只能算出“落在哪个槽、该比对哪个指纹”；该槽实际存的 token / 类别由语料统计决定。</p>
     </div>
 
-    <h3 style="margin:34px 0 6px;font-size:19px">④ 完整算例：x_{t-2}=100, x_{t-1}=30, x_t=2（3 阶）</h3>
+    <h3 style="margin:34px 0 6px;font-size:19px">③ 完整算例（续）：x_{t-2}=100, x_{t-1}=30, x_t=2（3 阶）</h3>
     <div class="tdraw">
       <h4>(100,30,2) 的手算过程</h4>
       <p class="tsmall">3 阶表有 2³⁰ 个槽（bits=30），用 3 个乘数：m0 乘 x_t，m1 乘 x_{t-1}，m2 乘 x_{t-2}。</p>
@@ -1132,6 +1132,122 @@ s_in / s_out：两个可学习标量，初始 0
 score[cls]  ：每个类别一个可学习标量，初始 0</div>
         <p>所以训练第 0 步，整个 hint 分支贡献恒为 0，模型等价于完全不用提示。</p>
       </div>
+    </div>
+
+    <h4 style="margin:26px 0 8px;font-size:16px;color:var(--ink)">三处注入的完整时间线</h4>
+    <div class="fbox">input_ids [B, L]
+   │
+   ├─ 查表一次：15 列 → H、hint_scores
+   ▼
+E[input_ids] + s_in · H                  ← ① 输入嵌入
+   ▼
+L 层 Transformer（中间不再加 hint）
+   ▼
+最终 RMSNorm
+   │
+   ├─ h + s_out · H                      ← ② 输出层之前
+   ▼
+输出层（可能先 head_proj 再 lm_head）
+   ▼
+logits [B, L, 49152]
+   │
+   ├─ logits[t, tok_c] += score[cls_c]   ← ③ logit 加分
+   ▼
+softmax / 交叉熵</div>
+    <p>三处共用一次查表结果：H 复用两次，logit 用的是同一批候选 token。位置 t 的提示来自“以 x_t 结尾的 n-gram 后继”，所以三处都在为预测 t+1 服务。</p>
+
+    <h4 style="margin:26px 0 8px;font-size:16px;color:var(--ink)">① 输入嵌入：h⁰ += s_in · H</h4>
+    <div class="card">
+      <p><b>加在哪：</b>第 1 层之前，和 token 嵌入直接相加。</p>
+      <div class="fbox">inputs_embeds = E[input_ids] + s_in · H
+
+E[input_ids]   [B, L, h]
+H              [B, L, h]
+s_in           标量（hint_mix[0]，初始 0）</div>
+      <p><b>为什么加在这里：</b>提示从第 1 层就进入残差流，后面的注意力、MLP 都能间接使用；相当于提前告诉模型“这个词后面通常接什么”。</p>
+      <p><b>形状（1e19）：</b><code>E[input_ids] [B,3072,1152]</code>、<code>H [B,3072,1152]</code>、<code>s_in</code> 标量。</p>
+    </div>
+
+    <h4 style="margin:26px 0 8px;font-size:16px;color:var(--ink)">② 输出层之前：h += s_out · H</h4>
+    <div class="card">
+      <p><b>加在哪：</b>所有 Transformer 层跑完、最终 RMSNorm 之后，输出层之前。</p>
+      <div class="fbox">h = RMSNorm(h_L)
+h = h + s_out · H
+logits = W_out · h          # 或先 head_proj 再 lm_head</div>
+      <p><b>注意：</b>这不是每层注意力的输出前。每层 V 里加的是 <b>VE / NVE</b>（逐层、逐 token）；hint 是<b>模型级</b>，只在入口和出口各加一次。中段缩短时也不会重新查 hint。</p>
+      <p><code>s_in</code> 和 <code>s_out</code> 是两个独立标量，模型可以学“入口少信一点、出口多信一点”，或反过来。</p>
+    </div>
+
+    <h4 style="margin:26px 0 8px;font-size:16px;color:var(--ink)">③ logit 加分：logits[t, tok_c] += score[cls_c]</h4>
+    <div class="card">
+      <p><b>加在哪：</b>输出层算出 logits 之后、softmax / 交叉熵之前。</p>
+      <div class="fbox">logits[t, tok_k] += score[cls_k]
+
+score[cls]：每个类别一个可学习标量（631 个），初始 0
+同一个 token 被多列命中 → 分数相加（scatter_add）
+没命中 → 加 0
+没有矩阵乘，只改候选 token 所在的列</div>
+      <p>和输出前注入的区别：输出前是 <b>h 维隐空间</b>的向量，经过 W_out 后影响<b>全部</b> logits；logit 加分是 <b>49152 维词表空间</b>里的标量，只改那 15 个候选列。</p>
+    </div>
+
+    <h4 style="margin:26px 0 8px;font-size:16px;color:var(--ink)">为什么分成三处</h4>
+    <div class="fbox">入口：进入表示       → 影响所有层
+出口：进入最终隐状态 → 离预测近
+logit：直接改候选分数 → 最直接
+
+s_in / s_out / score 分别学习每一处的信任程度</div>
+    <p>初始化时 <code>amount = feat = score = 0</code>、<code>s_in = s_out = 0</code>，所以第 0 步整个 hint 分支贡献为 0，模型等价于完全不用提示。注意 H 本身不为 0，只是被 <code>s = 0</code> 乘掉了。</p>
+
+    <h4 style="margin:26px 0 8px;font-size:16px;color:var(--ink)">梯度会流向哪里</h4>
+    <div class="card">
+      <ul style="margin:4px 0 0;padding-left:20px;color:var(--muted);font-size:14px">
+        <li>被提示 token 的输入嵌入 <code>E[tok]</code> 行：收到额外梯度（同一 token 多列命中就多份）；</li>
+        <li><code>amount / feat / score</code>：每个类别一组参数，只更新被命中的类别；</li>
+        <li><code>s_in / s_out</code>：两个全局标量，所有位置共享；</li>
+        <li>主干：通过残差流正常反传；</li>
+        <li><b>hint 表本身</b>：没有参数、没有梯度，不进优化器和 state_dict。</li>
+      </ul>
+    </div>
+
+    <h4 style="margin:26px 0 8px;font-size:16px;color:var(--ink)">一个 3 维数值例子（假设 h=3）</h4>
+    <div class="tdraw">
+      <p class="tsmall">某个位置命中 2 列：列 0（token 123，类别 5）、列 8（token 123，类别 12）。</p>
+      <div class="fbox">E[123]      = [0.2, -0.1, 0.4]
+amount[5]   = 0.0      feat[5]   = [0, 0, 0]
+amount[12]  = 0.5      feat[12]  = [0.01, 0.02, -0.01]
+
+列 0：1.0 × E[123] + feat[5]
+     = [0.2, -0.1, 0.4]
+
+列 8：1.5 × E[123] + feat[12]
+     = [0.31, -0.13, 0.59]
+
+H = [0.2,-0.1,0.4] + [0.31,-0.13,0.59]
+  = [0.51, -0.23, 0.99]
+
+假设学到的 s_in=0.1、s_out=0.2：
+输入：h⁰ += 0.1 × H = [0.051, -0.023, 0.099]
+输出：h  += 0.2 × H = [0.102, -0.046, 0.198]
+logit：logits[123] += score[5] + score[12]</div>
+      <p class="small">同一个 token 被两列命中时，向量加两次、logit 分数也加两次——这正是“多阶都指向它”时提示更强的来源。</p>
+    </div>
+
+    <h4 style="margin:26px 0 8px;font-size:16px;color:var(--ink)">形状速查（1e19）</h4>
+    <div class="tbl-wrap">
+      <table class="tbl">
+        <thead><tr><th>张量</th><th>形状</th><th>说明</th></tr></thead>
+        <tbody>
+          <tr><td><code>H</code></td><td>[B, 3072, 1152]</td><td>15 列提示向量之和</td></tr>
+          <tr><td>候选 token</td><td>[B, 3072, 15]</td><td>没命中的位置为 0 / 空</td></tr>
+          <tr><td>类别</td><td>[B, 3072, 15]</td><td>1~630，0 为空</td></tr>
+          <tr><td>hint 分数</td><td>[B, 3072, 15]</td><td>score[class]</td></tr>
+          <tr><td><code>logits</code></td><td>[B, 3072, 49152]</td><td>③ 之后得到最终 logits</td></tr>
+          <tr><td><code>E</code></td><td>[49152, 1152]</td><td>输入嵌入，提示向量复用</td></tr>
+          <tr><td><code>amount</code></td><td>[631, 1]</td><td>每类信任度缩放</td></tr>
+          <tr><td><code>feat</code></td><td>[631, 1152]</td><td>每类偏置向量</td></tr>
+          <tr><td><code>score</code></td><td>[631, 1]</td><td>每类 logit 加分</td></tr>
+        </tbody>
+      </table>
     </div>
 
     <h3 style="margin:34px 0 6px;font-size:19px">⑤ 一个例子：15 列里命中 6 列</h3>
