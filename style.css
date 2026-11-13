@@ -355,3 +355,21 @@ footer .wrap{display:flex;gap:18px;flex-wrap:wrap;justify-content:space-between}
 /* 架构图只作展示：不再可点击 */
 svg .node{cursor:default}
 svg .node:hover .box{filter:none}
+
+/* ---------- 打印 / 导出 PDF ---------- */
+@media print{
+  *{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  html,body{background:#070b17!important;color:#eaf2ff}
+  .topbar,.nav,.hero-actions,footer{display:none!important}
+  .hero{min-height:0;padding:18mm 0 8mm}
+  .section{padding:0 0 10mm;break-before:page}
+  .section:first-of-type{break-before:auto}
+  .wrap{max-width:none;padding:0 5mm}
+  .card,.tdraw,.diagram-shell,.tbl-wrap,.fbox,.detail,.note{break-inside:avoid}
+  .diagram-shell svg{max-width:100%;height:auto}
+  .tbl{font-size:10.5px}
+  .tbl th,.tbl td{padding:5px 7px}
+  .fbox{font-size:9.5px;line-height:1.7}
+  .sec-head h2{font-size:22px}
+  .sec-sub,.card p{font-size:12px}
+}
